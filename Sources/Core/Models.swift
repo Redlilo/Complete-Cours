@@ -70,6 +70,10 @@ struct Zone: Identifiable {
     var overflow = false                // le texte ne rentre pas entièrement
     var error: String? = nil            // message d'erreur propre à cette zone (affiché dans la liste)
     var textHeight: CGFloat = 11        // corps du texte voisin (pour choisir la taille d'écriture)
+    /// À quel point on est sûr que c'est un vrai trou à remplir (0 : douteux, 1 : sûr). Rempli par le détecteur.
+    var confidence: Double = 1
+    /// Raisons lisibles de la confiance (« pointillés dans le texte », « ligne dessinée en marge »…), pour l'affichage.
+    var signals: [String] = []
 
     /// Rectangle englobant (espace page PDF).
     var rect: CGRect {
