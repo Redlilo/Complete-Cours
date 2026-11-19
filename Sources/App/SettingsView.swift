@@ -267,6 +267,7 @@ struct APIKeyField: View {
 
 struct WritingSettings: View {
     @AppStorage(Pref.humanize) private var humanize = Pref.defaultHumanize
+    @AppStorage(Pref.humanizeTone) private var toneRaw = HumanizeTone.eleve.rawValue
     @AppStorage(Pref.writingStyle) private var styleKey = Pref.defaultStyle
     @AppStorage(Pref.flatten) private var flatten = Pref.defaultFlatten
 
@@ -276,6 +277,13 @@ struct WritingSettings: View {
                 Toggle("Humaniser les réponses aux questions ouvertes", isOn: $humanize)
                 Text("Les réponses aux questions ouvertes sont réécrites pour sonner comme un élève, sans changer le sens ni les nombres. Les textes à trous et les définitions restent exacts.")
                     .font(.callout).foregroundStyle(.secondary)
+                if humanize {
+                    Picker("Ton des réponses humanisées", selection: $toneRaw) {
+                        ForEach(HumanizeTone.allCases) { Text($0.title).tag($0.rawValue) }
+                    }
+                    .pickerStyle(.segmented)
+                    Text((HumanizeTone(rawValue: toneRaw) ?? .eleve).detail).font(.callout).foregroundStyle(.secondary)
+                }
             }
             Section("Style d'écriture") {
                 Picker("Style", selection: $styleKey) {

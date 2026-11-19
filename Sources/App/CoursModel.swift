@@ -412,7 +412,7 @@ final class CoursModel: ObservableObject {
         }
 
         let requested: Set<Int> = ids ?? Set(zones.filter { $0.enabled }.map { $0.id })
-        let completion = CompletionSettings(humanize: settings.humanize, student: settings.student)
+        let completion = CompletionSettings(humanize: settings.humanize, student: settings.student, humanizeTone: settings.humanizeTone)
         let name = documentName
         var humanizeWarning: String?
 

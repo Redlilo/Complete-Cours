@@ -6,6 +6,7 @@ enum Pref {
     static let engine = "engine"
     static let claudeModel = "claudeModel"
     static let humanize = "humanize"
+    static let humanizeTone = "humanizeTone"
     static let writingStyle = "writingStyle"
     static let flatten = "flattenOnExport"
     static let studentName = "studentName"
@@ -41,6 +42,7 @@ enum Pref {
             engine: defaultEngine.rawValue,
             claudeModel: ClaudeEngine.defaultModel,
             humanize: defaultHumanize,
+            humanizeTone: HumanizeTone.eleve.rawValue,
             writingStyle: defaultStyle,
             flatten: defaultFlatten,
             claudeCodeModel: "",
@@ -109,6 +111,7 @@ struct RunSettings {
     var engine: EngineKind
     var claudeModel: String
     var humanize: Bool
+    var humanizeTone: HumanizeTone = .eleve
     var styleKey: String
     var flatten: Bool
     var student: StudentProfile
@@ -133,6 +136,7 @@ struct RunSettings {
             engine: EngineKind(rawValue: defaults.string(forKey: Pref.engine) ?? "") ?? Pref.defaultEngine,
             claudeModel: defaults.string(forKey: Pref.claudeModel) ?? ClaudeEngine.defaultModel,
             humanize: defaults.object(forKey: Pref.humanize) as? Bool ?? Pref.defaultHumanize,
+            humanizeTone: HumanizeTone(rawValue: defaults.string(forKey: Pref.humanizeTone) ?? "") ?? .eleve,
             styleKey: defaults.string(forKey: Pref.writingStyle) ?? Pref.defaultStyle,
             flatten: defaults.object(forKey: Pref.flatten) as? Bool ?? Pref.defaultFlatten,
             student: StudentProfile(

@@ -4,6 +4,7 @@ import PDFKit
 struct CompletionSettings {
     var humanize: Bool
     var student: StudentProfile
+    var humanizeTone: HumanizeTone = .eleve
 }
 
 /// Nettoyage des réponses brutes d'une IA.
@@ -425,7 +426,8 @@ enum CoursPipeline {
                 start += batchSize
                 let items = batch.map { i in
                     HumanizeItem(id: zones[i].id, kind: zones[i].kind, question: zones[i].contextBefore,
-                                 answer: zones[i].rawAnswer, maxChars: max(zones[i].capacity, zones[i].rawAnswer.count))
+                                 answer: zones[i].rawAnswer, maxChars: max(zones[i].capacity, zones[i].rawAnswer.count),
+                                 tone: settings.humanizeTone)
                 }
                 do {
                     let result = try await engine.humanize(items)

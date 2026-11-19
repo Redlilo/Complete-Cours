@@ -217,6 +217,7 @@ struct LibraryView: View {
     @ObservedObject private var intake = IntakeModel.shared
     @State private var search = ""
     @State private var showArchive = false
+    @State private var showDuplicates = false
     @ObservedObject private var nav = Navigator.shared
     @State private var showAutoIntake = false
     @AppStorage("archiveOriginals") private var archiveAuto = true
@@ -257,6 +258,7 @@ struct LibraryView: View {
         .sheet(isPresented: $showAnalysis) { AnalysisSheet() }
         .sheet(isPresented: $showHistory) { MoveHistorySheet() }
         .sheet(isPresented: $showArchive) { ArchiveSheet() }
+        .sheet(isPresented: $showDuplicates) { DuplicatesSheet() }
         .onChange(of: nav.showArchive) { _, wanted in if wanted { showArchive = true; nav.showArchive = false } }
         .sheet(isPresented: $showAutoIntake) { AutoIntakeSheet() }
         .overlay { if dropTargeted { RoundedRectangle(cornerRadius: 14).strokeBorder(Color.accentColor, style: StrokeStyle(lineWidth: 3, dash: [10, 6])).padding(6).allowsHitTesting(false) } }
@@ -367,6 +369,9 @@ struct LibraryView: View {
             Button { showAnalysis = true } label: { Label("Analyser", systemImage: "sparkle.magnifyingglass") }
                 .buttonStyle(.bordered).controlSize(.large)
                 .help("Lire tous les cours pour proposer de les réorganiser ou de les compléter")
+            Button { showDuplicates = true } label: { Label("Doublons", systemImage: "square.on.square") }
+                .buttonStyle(.bordered).controlSize(.large)
+                .help("Supprimer les doublons : lit tous les PDF, compare, et met à la Corbeille ce que tu valides")
             Menu {
                 Button("Tout déplier") { withAnimation(.snappy(duration: 0.15)) { library.expandAll() } }.disabled(!search.isEmpty)
                 Button("Tout replier") { withAnimation(.snappy(duration: 0.15)) { library.collapseAll() } }.disabled(!search.isEmpty)

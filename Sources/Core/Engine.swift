@@ -39,12 +39,24 @@ struct ZoneAnswer {
 
 /// Une réponse à réécrire dans un style plus naturel (étape « humanisation »).
 /// Seules les zones `.definition` et `.question` passent par là : jamais les mots à compléter.
+/// Ton de la réécriture « humaine » des réponses aux questions ouvertes (jamais des définitions ni des mots à compléter).
+enum HumanizeTone: String, CaseIterable, Identifiable {
+    case eleve, precis
+    var id: String { rawValue }
+    var title: String { self == .eleve ? "Style élève" : "Précis" }
+    var detail: String {
+        self == .eleve ? "Phrases courtes et mots simples, comme tu l'écrirais toi-même."
+                       : "Phrases complètes et soignées, avec le vocabulaire du cours."
+    }
+}
+
 struct HumanizeItem {
     var id: Int                      // identifiant de zone (Zone.id)
     var kind: ZoneKind
     var question: String             // texte voisin (la consigne)
     var answer: String               // réponse à réécrire
     var maxChars: Int                // longueur maximale du résultat
+    var tone: HumanizeTone = .eleve  // ton demandé
 }
 
 enum EngineError: LocalizedError {

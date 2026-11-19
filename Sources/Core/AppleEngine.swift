@@ -399,7 +399,7 @@ extension AppleEngine {
     static func rewrite(_ item: HumanizeItem) async throws -> String? {
         let kind = item.kind == .definition ? "définition" : "question ouverte"
         let question = AppleText.tail(AppleText.tidy(item.question), 220)
-        let prompt = "Type : \(kind)\nConsigne : « \(question) »\nRéponse à réécrire : « \(item.answer) »\nmax_caracteres : \(item.maxChars)\nRéponse réécrite :"
+        let prompt = "\(Prompts.toneInstruction(item.tone))\nType : \(kind)\nConsigne : « \(question) »\nRéponse à réécrire : « \(item.answer) »\nmax_caracteres : \(item.maxChars)\nRéponse réécrite :"
         let raw = try await ask(levels: 1) { _ in
             PromptSpec(instructions: Prompts.humanizeSystem, prompt: prompt, maxTokens: min(max(item.maxChars / 2 + 20, 40), 260))
         }

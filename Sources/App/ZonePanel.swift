@@ -7,6 +7,8 @@ struct ZonePanel: View {
     @EnvironmentObject var engines: EngineStatus
     @Environment(\.openSettings) private var openSettings
     @AppStorage(Pref.engine) private var engineRaw = Pref.defaultEngine.rawValue
+    @AppStorage(Pref.humanize) private var humanize = Pref.defaultHumanize
+    @AppStorage(Pref.humanizeTone) private var toneRaw = HumanizeTone.eleve.rawValue
 
     private var engineKind: EngineKind { EngineKind(rawValue: engineRaw) ?? Pref.defaultEngine }
 
@@ -59,17 +61,35 @@ struct ZonePanel: View {
                      : "\(model.zonesToFill - model.answeredCount) zone(s) encore vide(s).")
                     .font(.caption).foregroundStyle(.secondary)
             }
-            Label {
-                Text("Les textes à trous et les définitions restent exacts. Seules les questions ouvertes peuvent être humanisées.")
-                    .fixedSize(horizontal: false, vertical: true)
-            } icon: {
-                Image(systemName: "info.circle")
-            }
-            .font(.caption)
-            .foregroundStyle(.secondary)
+            humanizeCard
         }
         .padding(.horizontal, 14).padding(.vertical, 12)
         .background(LinearGradient(colors: [Color.accentColor.opacity(0.08), .clear], startPoint: .topLeading, endPoint: .bottomTrailing))
+    }
+
+    /// Option visible : humaniser les réponses aux questions (jamais les définitions ni les mots à compléter) et son ton.
+    private var humanizeCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Toggle(isOn: $humanize) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Humaniser les réponses aux questions").font(.subheadline.weight(.semibold))
+                    Text("Définitions et mots à compléter : toujours exacts, jamais réécrits.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            .toggleStyle(.switch)
+            .disabled(model.isRunning)
+            if humanize {
+                Picker("Ton", selection: $toneRaw) {
+                    ForEach(HumanizeTone.allCases) { Text($0.title).tag($0.rawValue) }
+                }
+                .pickerStyle(.segmented).labelsHidden()
+                .disabled(model.isRunning)
+                .accessibilityLabel("Ton des réponses humanisées")
+                Text((HumanizeTone(rawValue: toneRaw) ?? .eleve).detail).font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .card(padding: 10)
     }
 
     // MARK: Messages (moteur, progression, erreurs)
