@@ -124,29 +124,6 @@ struct PDFKitView: NSViewRepresentable {
     }
 }
 
-/// Couleur et pictogramme d'une matière, d'après son nom.
-enum SubjectStyle {
-    static func color(_ name: String) -> Color {
-        let palette: [Color] = [.blue, .orange, .green, .purple, .pink, .teal, .indigo, .red]
-        let h = name.unicodeScalars.reduce(5381) { ($0 &* 33) &+ Int($1.value) }
-        return palette[abs(h) % palette.count]
-    }
-    static func symbol(_ name: String) -> String {
-        let n = name.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: nil)
-        if n.contains("math") { return "function" }
-        if n.contains("physique") || n.contains("chimie") { return "atom" }
-        if n.contains("histoire") || n.contains("geo") { return "globe.europe.africa" }
-        if n.contains("francais") { return "text.book.closed" }
-        if n.contains("anglais") { return "character.bubble" }
-        if n.contains("atelier") { return "bolt.fill" }
-        if n.contains("eco") || n.contains("gestion") { return "chart.bar" }
-        if n.contains("pse") { return "cross.case" }
-        if n.contains("co-int") { return "person.2" }
-        if n.contains("original") { return "archivebox" }
-        return "folder.fill"
-    }
-}
-
 // MARK: - Vue
 
 struct LibraryView: View {
@@ -399,16 +376,5 @@ private struct DocumentPreview: View {
             Divider()
             PDFKitView(url: file.url).id(file.url)
         }
-    }
-}
-
-private struct Tag: View {
-    let text: String
-    let color: Color
-    var body: some View {
-        Text(text)
-            .font(.caption2.weight(.medium)).foregroundStyle(color)
-            .padding(.horizontal, 6).padding(.vertical, 1)
-            .background(color.opacity(0.14), in: Capsule())
     }
 }
