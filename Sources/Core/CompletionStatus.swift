@@ -26,7 +26,7 @@ enum CompletionStatus {
             guard let page = doc.page(at: a.pageIndex) else { continue }
             let notes = textAnnotationRects(page)
             let ink = inkProbe(page)
-            for z in a.zones {
+            for z in a.zones where isMeaningful(z, page: page) {
                 zones += 1
                 if isAnswered(z, notes: notes, ink: ink) { answered += 1 }
             }
@@ -38,6 +38,25 @@ enum CompletionStatus {
     static func report(url: URL) -> CompletionReport? {
         guard let analyses = try? CoursPipeline.analyzeChecked(url: url, needText: false, progress: { _, _ in }) else { return nil }
         return report(url: url, analyses: analyses)
+    }
+
+    // MARK: Faux trous
+
+    /// Écarte ce que le détecteur prend pour un trou sans en être un : le trait de pied de page ou d'en-tête
+    /// (une longue ligne dans les marges) et les « Libellé : » suivis d'un schéma plutôt que de pointillés.
+    static func isMeaningful(_ z: Zone, page: PDFPage) -> Bool {
+        let b = page.bounds(for: .cropBox), r = z.rect
+        if z.source == .ligne || z.source == .texte {
+            let rel = (r.midY - b.minY) / max(b.height, 1)
+            if (rel < 0.09 || rel > 0.94) && r.width > 0.5 * b.width { return false }
+        }
+        if z.source == .texte {
+            let under = page.selection(for: r.insetBy(dx: -4, dy: -4))?.string ?? ""
+            let leader = under.range(of: "[._…·\\-–—]{4,}", options: .regularExpression) != nil
+            let brackets = under.range(of: "[\\(\\[]\\s*[\\)\\]]", options: .regularExpression) != nil
+            if !leader && !brackets { return false }
+        }
+        return true
     }
 
     // MARK: Signaux
