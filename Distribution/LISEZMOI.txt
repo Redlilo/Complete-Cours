@@ -1,0 +1,135 @@
+COMPLÈTE-COURS — MODE D'EMPLOI
+==============================
+
+Complète-Cours est une application Mac qui remplit à ta place les PDF de cours à trous (pointillés, définitions,
+questions ouvertes, tableaux, formulaires). Une IA écrit les réponses ; tu relis, tu corriges, tu enregistres.
+
+
+1. CE QU'IL TE FAUT
+-------------------
+- Un Mac à puce Apple (M1, M2, M3, M4 ou plus récent). Pas un vieux Mac Intel.
+- macOS 26 ou plus récent.
+  Vérification : menu Pomme > « À propos de ce Mac ».
+- Une connexion Internet si tu utilises Claude (pas nécessaire avec Apple Intelligence).
+
+
+2. INSTALLATION
+---------------
+1. Double-clique sur le fichier .zip : il se décompresse en un dossier.
+2. Dans ce dossier, glisse « Complete-Cours » (l'application) dans le dossier « Applications »
+   (le dossier Applications est dans la colonne de gauche du Finder).
+
+
+3. PREMIER LANCEMENT (important : une seule fois)
+-------------------------------------------------
+L'application n'est pas « notarisée » par Apple (c'est un projet d'élève, pas une app de l'App Store).
+macOS la bloque donc au premier lancement avec un message du genre « Apple n'a pas pu vérifier que
+Complete-Cours ne contient pas de logiciel malveillant ». Ce n'est pas une panne : il faut dire à
+macOS que tu fais confiance à cette app. Ne le fais que si tu as reçu l'app de la personne qui l'a
+fabriquée.
+
+Sur macOS récent, le clic droit > Ouvrir ne suffit plus pour ce genre d'app. Voici la méthode :
+
+  a) Ouvre l'application depuis le dossier Applications (double-clic). Elle est bloquée : clique sur
+     « OK » (ou « Terminé »). N'utilise PAS « Placer dans la corbeille ».
+  b) Ouvre le menu Pomme > Réglages Système > « Confidentialité et sécurité ».
+  c) Descends dans la page jusqu'à la section « Sécurité ». Tu y vois une phrase disant que
+     « Complete-Cours » a été bloquée, avec un bouton « Ouvrir quand même ».
+  d) Clique sur « Ouvrir quand même », entre le mot de passe de ton Mac (ou Touch ID), puis confirme
+     avec « Ouvrir ».
+
+  Si le bouton n'apparaît pas : il n'est proposé que pendant environ une heure après la tentative
+  d'ouverture. Refais l'étape a), puis retourne dans Réglages Système.
+
+Après cela, l'app s'ouvre normalement par un double-clic.
+
+Autre méthode (Terminal), si la première ne marche pas : ouvre l'app « Terminal » et colle cette ligne,
+puis appuie sur Entrée :
+
+    xattr -dr com.apple.quarantine /Applications/Complete-Cours.app
+
+Puis ouvre l'application normalement. (Cette commande retire simplement la marque « téléchargé depuis
+Internet » du fichier. Si tu as rangé l'app ailleurs que dans Applications, adapte le chemin.)
+
+Les premières fois, macOS peut aussi te demander l'autorisation d'accéder à ton dossier Bureau,
+Documents ou Téléchargements : accepte, c'est là que sont tes cours.
+
+
+4. CHOISIR COMMENT L'IA TRAVAILLE
+---------------------------------
+Ouvre les Réglages de l'app (menu Complète-Cours > Réglages, ou ⌘ virgule).
+
+Cette version ne propose que deux moteurs : Apple Intelligence et Claude avec ta clé API. Le moteur
+« Claude (mon compte) », qui passe par un abonnement personnel, n'est PAS inclus dans cette version.
+
+OPTION A — Apple Intelligence (gratuit, tout reste sur ton Mac)
+  - Réglages Système > « Apple Intelligence et Siri » : active-la et laisse macOS télécharger ses
+    modèles (cela peut prendre un moment).
+  - Avantages : gratuit, rien ne quitte ton Mac, pas de compte.
+  - Limites : un peu moins précise ; elle ne lit que le texte de la page (pas les schémas ni les
+    images) ; plus lente.
+  - Elle n'est pas disponible sur tous les Mac ni dans toutes les langues.
+
+OPTION B — Claude (le plus précis, payant à l'usage)
+  Il te faut TA PROPRE clé API Anthropic. Attention :
+  - Un abonnement Claude.ai (gratuit, Pro ou Max) NE donne PAS de clé API. L'API est un autre produit,
+    avec un autre compte et un autre paiement.
+  - Pour créer la clé :
+      1. Va sur console.anthropic.com et crée un compte.
+      2. Ajoute des crédits (paiement à l'usage, quelques euros suffisent pour commencer).
+      3. Va dans « API Keys » (clés API), crée une clé, copie-la tout de suite (elle ne s'affiche
+         qu'une fois). Elle commence par « sk-ant- ».
+      4. Dans Complète-Cours : Réglages > Moteur, colle la clé.
+  - Âge : Anthropic demande d'avoir 18 ans pour utiliser Claude. Je n'ai pas trouvé de règle écrite
+    précise pour la console développeur. Si tu as moins de 18 ans, demande à un parent ou
+    représentant légal de créer et de gérer le compte, ou utilise l'option A.
+  - FIXE-TOI UNE LIMITE DE DÉPENSE : dans la console, section des limites (« Limits »), règle une
+    limite mensuelle basse (par exemple 5 €). Ainsi tu ne peux jamais dépenser plus.
+  - Ne partage JAMAIS ta clé (ni par message, ni en capture d'écran). Si tu l'as montrée à quelqu'un,
+    supprime-la dans la console et crées-en une nouvelle. Chaque personne utilise sa propre clé.
+  - Où est gardée la clé : dans le Trousseau de ton Mac, nulle part ailleurs.
+
+  Coût indicatif par page (ce sont des ESTIMATIONS, le prix réel dépend de la page et des tarifs du
+  moment ; vérifie les tarifs dans la console) :
+      Opus 5.5 : environ 4 centimes
+      Sonnet 5.5 : environ 2 centimes
+      Haiku 5.5 : environ 0,1 centime (moins précis)
+  Un cours de 10 pages revient donc à quelques dizaines de centimes au plus avec Opus.
+
+
+5. UTILISER L'APPLICATION
+-------------------------
+1. Ouvre un PDF (⌘O, ou glisse-le dans la fenêtre).
+2. L'app repère les zones à remplir et les numérote. Tu peux en ignorer ou en ajouter.
+3. Clique sur « Compléter le cours » (⌘R).
+4. RELIS TOUTES LES RÉPONSES avant de rendre ton travail : l'IA peut se tromper, et c'est toi le
+   responsable de ce que tu rends. Corrige directement dans la liste.
+5. Enregistre (⌘S) : le PDF complété est enregistré sous un nouveau nom. Ton PDF d'origine n'est pas modifié.
+
+L'app réécrit les définitions et les questions ouvertes avec des mots plus simples et naturels
+(« humanisation »). Les mots à compléter ne sont jamais réécrits : ils restent exacts.
+
+
+6. CONFIDENTIALITÉ
+------------------
+- Avec Claude : les pages du PDF (image et texte) sont envoyées à Anthropic pour être analysées.
+  N'utilise pas ce mode avec un document contenant des informations personnelles que tu ne veux pas
+  partager.
+- Avec Apple Intelligence : tout reste sur ton Mac.
+- Ta clé API est gardée dans le Trousseau de ton Mac.
+
+
+7. EN CAS DE PROBLÈME
+---------------------
+- « L'app est endommagée » ou « ne peut pas être ouverte » : refais l'étape 3 (Ouvrir quand même, ou
+  la commande xattr).
+- L'app ne se lance pas du tout : vérifie que tu as bien un Mac à puce Apple et macOS 26 ou plus.
+- Impossible d'ouvrir un PDF du Bureau : Réglages Système > Confidentialité et sécurité > Fichiers et
+  dossiers : autorise Complete-Cours pour Bureau / Documents / Téléchargements.
+- « Clé refusée » : vérifie qu'elle est complète (sans espace), qu'elle vient bien de
+  console.anthropic.com (pas de l'abonnement Claude.ai) et qu'il reste des crédits.
+- Apple Intelligence indisponible : vérifie qu'elle est activée dans Réglages Système, ou utilise Claude.
+- Le trousseau demande une autorisation : choisis « Toujours autoriser ».
+- Un scan très penché ou très pâle : ajoute les zones à la main en dessinant un rectangle sur la page.
+- Pages tournées ou PDF protégé par mot de passe : l'app ne les lit pas ; redresse la page ou exporte
+  une copie sans mot de passe depuis Aperçu.

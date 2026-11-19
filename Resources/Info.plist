@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Info.plist de Complète-Cours (copié tel quel dans l'app par build.sh).
+  Chaque clé a un rôle ; rien d'autre n'est déclaré : pas de sandbox ni d'entitlements, pas de réseau local,
+  pas d'exception App Transport Security (l'API de Claude est en HTTPS), pas d'Apple Events.
+-->
+<plist version="1.0">
+<dict>
+	<!-- Identité de l'app -->
+	<key>CFBundleIdentifier</key>
+	<string>fr.complete-cours.app</string>
+	<key>CFBundleName</key>
+	<string>Complète-Cours</string>
+	<key>CFBundleDisplayName</key>
+	<string>Complète-Cours</string>
+	<!-- Nom du fichier dans Contents/MacOS (sans accent) : build.sh vérifie qu'il correspond. -->
+	<key>CFBundleExecutable</key>
+	<string>Complete-Cours</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.0</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<!-- Contents/Resources/AppIcon.icns (fabriqué par build.sh à partir de Tools/make_icon.swift). -->
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
+	<key>NSHumanReadableCopyright</key>
+	<string>Copyright © 2026 Complète-Cours. Tous droits réservés.</string>
+
+	<!-- Langue : sans cela, les menus (Fichier, Édition…) et les boîtes de dialogue du système (Ouvrir, Enregistrer,
+	     Quitter…) restent en anglais, même sur un Mac en français. Avec le français comme langue de
+	     développement, ils sont en français quelle que soit la langue du Mac (vérifié). -->
+	<key>CFBundleDevelopmentRegion</key>
+	<string>fr</string>
+	<key>CFBundleLocalizations</key>
+	<array>
+		<string>fr</string>
+	</array>
+
+	<!-- Système -->
+	<key>LSMinimumSystemVersion</key>
+	<string>26.0</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.education</string>
+	<key>NSPrincipalClass</key>
+	<string>NSApplication</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+
+	<!-- Fichiers PDF : l'app apparaît dans « Ouvrir avec » et accepte un PDF déposé sur son icône (Finder, Dock),
+	     sans prendre la place d'Aperçu comme app par défaut (rang « Alternate »). Elle lit le PDF et enregistre
+	     une copie complétée : rôle « Viewer ». -->
+	<key>CFBundleDocumentTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>Document PDF</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>com.adobe.pdf</string>
+			</array>
+		</dict>
+	</array>
+
+	<!-- Phrase affichée par macOS la première fois que l'app accède aux dossiers où se trouvent les cours
+	     (le Bureau surtout). Sans elle, la fenêtre d'autorisation s'affiche sans explication. -->
+	<key>NSDesktopFolderUsageDescription</key>
+	<string>Complète-Cours doit lire tes PDF de cours et enregistrer les versions complétées dans ton dossier Bureau.</string>
+	<key>NSDocumentsFolderUsageDescription</key>
+	<string>Complète-Cours doit lire tes PDF de cours et enregistrer les versions complétées dans ton dossier Documents.</string>
+	<key>NSDownloadsFolderUsageDescription</key>
+	<string>Complète-Cours doit lire tes PDF de cours et enregistrer les versions complétées dans ton dossier Téléchargements.</string>
+</dict>
+</plist>

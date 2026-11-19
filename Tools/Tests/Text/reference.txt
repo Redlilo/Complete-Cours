@@ -1,0 +1,39 @@
+SYNTHESE attendus=6 trouves=6 faux=0
+PAGE safran p1 total=1 formulaire=0 texte=1 ligne=0 cadre=0
+PAGE safran p2 total=5 formulaire=0 texte=4 ligne=1 cadre=0
+PAGE safran p3 total=3 formulaire=0 texte=2 ligne=1 cadre=0
+PAGE safran p4 total=4 formulaire=0 texte=4 ligne=0 cadre=0
+TEMPS safran ms=859
+PAGE portail_s1 p1 total=1 formulaire=1 texte=0 ligne=0 cadre=0
+PAGE portail_s1 p2 total=5 formulaire=5 texte=0 ligne=0 cadre=0
+PAGE portail_s1 p3 total=5 formulaire=5 texte=0 ligne=0 cadre=0
+PAGE portail_s1 p4 total=12 formulaire=12 texte=0 ligne=0 cadre=0
+PAGE portail_s1 p5 total=3 formulaire=3 texte=0 ligne=0 cadre=0
+TEMPS portail_s1 ms=968
+PAGE fiche_conv p1 total=0 formulaire=0 texte=0 ligne=0 cadre=0
+TEMPS fiche_conv ms=276
+PAGE hg_s2 p1 total=1 formulaire=0 texte=1 ligne=0 cadre=0
+PAGE hg_s2 p2 total=1 formulaire=0 texte=0 ligne=1 cadre=0
+PAGE hg_s2 p3 total=2 formulaire=0 texte=0 ligne=2 cadre=0
+PAGE hg_s2 p4 total=0 formulaire=0 texte=0 ligne=0 cadre=0
+TEMPS hg_s2 ms=1069
+PAGE hg_s4c p1 total=6 formulaire=0 texte=0 ligne=6 cadre=0
+PAGE hg_s4c p2 total=4 formulaire=0 texte=0 ligne=4 cadre=0
+PAGE hg_s4c p3 total=5 formulaire=0 texte=0 ligne=5 cadre=0
+PAGE hg_s4c p4 total=3 formulaire=0 texte=0 ligne=3 cadre=0
+TEMPS hg_s4c ms=1032
+PAGE ph p1 total=3 formulaire=0 texte=0 ligne=3 cadre=0
+PAGE ph p2 total=1 formulaire=0 texte=0 ligne=1 cadre=0
+PAGE ph p3 total=3 formulaire=0 texte=0 ligne=3 cadre=0
+TEMPS ph ms=738
+PAGE chimie1 p1 total=1 formulaire=0 texte=0 ligne=1 cadre=0
+PAGE chimie1 p2 total=0 formulaire=0 texte=0 ligne=0 cadre=0
+TEMPS chimie1 ms=493
+PAGE ions p1 total=1 formulaire=0 texte=1 ligne=0 cadre=0
+TEMPS ions ms=263
+PAGE fr_s1 p1 total=3 formulaire=0 texte=0 ligne=3 cadre=0
+PAGE fr_s1 p2 total=3 formulaire=0 texte=0 ligne=1 cadre=2
+TEMPS fr_s1 ms=540
+PAGE maths_s1 p1 total=19 formulaire=0 texte=0 ligne=4 cadre=15
+PAGE maths_s1 p2 total=6 formulaire=0 texte=0 ligne=6 cadre=0
+TEMPS maths_s1 ms=517
