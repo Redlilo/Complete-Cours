@@ -9,6 +9,8 @@ enum Pref {
     /// Après une complétion en lot, l'original vide est rangé dans « _Originaux avant completion ».
     static let archiveOriginals = "archiveOriginals"
     static let humanizeTone = "humanizeTone"
+    /// Option (désactivée par défaut) : l'IA contrôle « vrai trou / pas un trou » pour les zones douteuses seulement.
+    static let verifyDoubtfulHoles = "verifyDoubtfulHoles"
     static let writingStyle = "writingStyle"
     static let flatten = "flattenOnExport"
     static let studentName = "studentName"

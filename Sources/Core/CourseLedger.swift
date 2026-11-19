@@ -55,6 +55,11 @@ final class CourseLedger: @unchecked Sendable {
         var zones: Int
         var remaining: Int
         var isIncomplete: Bool
+        // ajoutés ensuite : optionnels pour relire les anciens journaux (état déduit à la lecture)
+        var state: String?
+        var usedBlank: Bool?
+        var blank: String?          // original vide utilisé (chemin absolu)
+        var blankMtime: Double?
     }
 
     struct AIEntry: Codable { var key: String; var json: String; var date: Date }
@@ -208,14 +213,42 @@ final class CourseLedger: @unchecked Sendable {
         return (size, date.timeIntervalSince1970)
     }
 
-    /// Résumé gardé pour ce fichier, seulement s'il n'a changé ni de taille ni de date de modification.
-    func cachedDigest(for url: URL, relativePath: String) -> CourseDigest? {
+    /// Résumé gardé pour ce fichier, seulement s'il n'a changé ni de taille ni de date de modification, et s'il a été
+    /// fait avec le même original vide (`blank`, nil : aucun) dans le même état.
+    func cachedDigest(for url: URL, relativePath: String, blank: URL? = nil) -> CourseDigest? {
+        lookup(url, relativePath: relativePath, checkBlank: true, blank: blank)
+    }
+
+    /// Comme `cachedDigest`, sans exiger que l'original vide soit celui du moment (pour les étiquettes de la
+    /// bibliothèque : on montre ce que la dernière analyse a conclu).
+    func cachedState(for url: URL, relativePath: String) -> CourseDigest? {
+        lookup(url, relativePath: relativePath, checkBlank: false, blank: nil)
+    }
+
+    private func lookup(_ url: URL, relativePath: String, checkBlank: Bool, blank: URL?) -> CourseDigest? {
         guard let s = Self.stamp(url) else { return nil }
         lock.lock(); defer { lock.unlock() }
         guard let e = store.digests[url.standardizedFileURL.path], e.version == Self.digestVersion,
               e.size == s.size, abs(e.mtime - s.mtime) < 0.001 else { return nil }
+        if checkBlank {
+            guard e.blank == blank?.standardizedFileURL.path else { return nil }
+            if let b = blank {
+                guard let bs = Self.stamp(b), let m = e.blankMtime, abs(m - bs.mtime) < 0.001 else { return nil }
+            }
+        }
         return CourseDigest(path: relativePath, isEvaluation: e.isEvaluation, excerpt: e.excerpt,
-                            zones: e.zones, remaining: e.remaining, isIncomplete: e.isIncomplete)
+                            zones: e.zones, remaining: e.remaining, isIncomplete: e.isIncomplete,
+                            state: e.state.flatMap { CompletionState(rawValue: $0) },
+                            usedBlank: e.usedBlank ?? false, blankPath: e.blank)
+    }
+
+    /// États gardés de plusieurs cours d'un coup (une seule prise du verrou).
+    func cachedStates(for files: [LibraryFile]) -> [URL: CourseDigest] {
+        var out: [URL: CourseDigest] = [:]
+        for f in files where !f.isEvaluation {
+            if let d = cachedState(for: f.url, relativePath: f.relativePath) { out[f.url] = d }
+        }
+        return out
     }
 
     /// Remplace tout le cache de lecture par ces résumés (les fichiers disparus en sortent).
@@ -223,9 +256,12 @@ final class CourseLedger: @unchecked Sendable {
         var map: [String: DigestEntry] = [:]
         for (url, d) in items {
             guard let s = Self.stamp(url) else { continue }
+            let blankStamp = d.blankPath.flatMap { Self.stamp(URL(fileURLWithPath: $0)) }
             map[url.standardizedFileURL.path] = DigestEntry(size: s.size, mtime: s.mtime, version: Self.digestVersion,
                                                             isEvaluation: d.isEvaluation, excerpt: d.excerpt, zones: d.zones,
-                                                            remaining: d.remaining, isIncomplete: d.isIncomplete)
+                                                            remaining: d.remaining, isIncomplete: d.isIncomplete,
+                                                            state: d.state.rawValue, usedBlank: d.usedBlank,
+                                                            blank: blankStamp == nil ? nil : d.blankPath, blankMtime: blankStamp?.mtime)
         }
         lock.lock(); defer { lock.unlock() }
         store.digests = map

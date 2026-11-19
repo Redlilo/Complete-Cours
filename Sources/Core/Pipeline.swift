@@ -5,6 +5,11 @@ struct CompletionSettings {
     var humanize: Bool
     var student: StudentProfile
     var humanizeTone: HumanizeTone = .eleve
+    /// Zones dont l'élève a lui-même décidé le type (ou que sa mémoire a fixé) : leur type n'est jamais changé.
+    var userKindZoneIDs: Set<Int> = []
+    /// Étape facultative : l'IA dit « vrai trou / pas un trou » pour les zones douteuses seulement (désactivée par défaut).
+    var verifyDoubtfulHoles = false
+    var holeCache: HoleCheckCache = .shared
 }
 
 /// Nettoyage des réponses brutes d'une IA.
@@ -232,7 +237,9 @@ enum CoursPipeline {
             progress(Double(i) / Double(n), "Recherche des zones à remplir — page \(i + 1) sur \(count)")
             autoreleasepool {
                 guard let page = doc.page(at: i) else { return }
-                let a = ZoneDetector.analyze(page: page, index: i, firstID: nextID, needText: needText)
+                var a = ZoneDetector.analyze(page: page, index: i, firstID: nextID, needText: needText)
+                // type proposé par les règles locales (déterministe) : l'IA le reçoit comme indication ou comme décision
+                for j in a.zones.indices { a.zones[j].kind = ZoneKindRules.propose(a.zones[j]).kind }
                 nextID += a.zones.count
                 out.append(a)
             }
@@ -279,25 +286,49 @@ enum CoursPipeline {
         let pageCount = doc.pageCount
         let today = Prompts.todayText()
 
+        let userDecided = settings.userKindZoneIDs
         func requested(_ z: Zone) -> Bool {
+            // une zone que l'élève a ignorée reste ignorée, même dans une régénération ciblée
+            if z.kind == .ignorer && userDecided.contains(z.id) { return false }
             if let only = onlyZoneIDs { return only.contains(z.id) }
             return z.enabled
         }
 
-        // lots à traiter : une page, ou plusieurs lots de 30 zones au plus pour les pages très chargées
-        let maxZonesPerRequest = 30
+        // 1) types : règle sûre ou choix de l'élève = décidé ; sinon indication pour l'IA
+        var lockedKinds: [Int: ZoneKind] = [:]
+        for i in zones.indices where requested(zones[i]) {
+            let r = ZoneKindRules.retained(for: zones[i], userDecided: userDecided.contains(zones[i].id))
+            zones[i].kind = r.kind
+            if r.locked { lockedKinds[zones[i].id] = r.kind }
+        }
+
+        // 2) contrôle facultatif des zones douteuses (pages concernées seulement)
+        var holeCheckSteps = 0
+        var notHoleIDs = Set<Int>()
+        let doubtful = settings.verifyDoubtfulHoles
+            ? zones.filter { requested($0) && ZoneTrust.isDoubtful($0) && $0.source != .manuel && !userDecided.contains($0.id) }
+            : []
+        if !doubtful.isEmpty { holeCheckSteps = 1 }
+
         var work: [(analysis: PageAnalysis, numbers: Set<Int>)] = []
         var zonesByPage: [Int: [Zone]] = [:]
-        for z in zones where requested(z) { zonesByPage[z.page, default: []].append(z) }
-        for a in analyses {
-            let nums = (zonesByPage[a.pageIndex] ?? []).map { $0.number }.sorted()
-            var i = 0
-            while i < nums.count {
-                work.append((a, Set(nums[i..<min(i + maxZonesPerRequest, nums.count)])))
-                i += maxZonesPerRequest
+        // lots à traiter : une page, ou plusieurs lots de 30 zones au plus pour les pages très chargées
+        let maxZonesPerRequest = 30
+        func buildWork() {
+            work = []
+            zonesByPage = [:]
+            for z in zones where requested(z) && !notHoleIDs.contains(z.id) { zonesByPage[z.page, default: []].append(z) }
+            for a in analyses {
+                let nums = (zonesByPage[a.pageIndex] ?? []).map { $0.number }.sorted()
+                var i = 0
+                while i < nums.count {
+                    work.append((a, Set(nums[i..<min(i + maxZonesPerRequest, nums.count)])))
+                    i += maxZonesPerRequest
+                }
             }
         }
-        let totalSteps = Double(max(work.count, 1)) + (settings.humanize ? 1 : 0)
+        buildWork()
+        var totalSteps = Double(max(work.count, 1) + holeCheckSteps) + (settings.humanize ? 1 : 0)
         var done = 0.0
 
         // avancement : toujours croissant, et pas plus d'une mise à jour par `minUpdateInterval` hors étapes clés
@@ -310,10 +341,11 @@ enum CoursPipeline {
             lastEmit = now
             onUpdate(zones, peak, label)
         }
-        emit(0, work.isEmpty ? "Aucune zone à remplir" : "Démarrage de \(engine.displayName)…", force: true)
 
-        func makeRequest(_ a: PageAnalysis, _ numbers: Set<Int>) -> PageRequest? {
-            let pz = (zonesByPage[a.pageIndex] ?? []).compactMap { z in
+        func makeRequest(_ a: PageAnalysis, _ numbers: Set<Int>, only candidates: [Zone]? = nil, holeCheck: Bool = false) -> PageRequest? {
+            let pz: [Zone] = candidates.map { list in
+                list.filter { $0.page == a.pageIndex && numbers.contains($0.number) }.compactMap { z in zones.first(where: { $0.id == z.id }) }
+            } ?? (zonesByPage[a.pageIndex] ?? []).compactMap { z in
                 numbers.contains(z.number) ? zones.first(where: { $0.id == z.id }) : nil
             }
             if pz.isEmpty { return nil }
@@ -325,10 +357,66 @@ enum CoursPipeline {
                     return MarkedImage.make(page: page, zones: pz)
                 }
             }
-            return PageRequest(documentName: documentName,
-                               pageNumber: a.pageIndex + 1, pageCount: pageCount,
-                               transcript: a.transcript, hasTextLayer: a.hasTextLayer, zones: pz,
-                               markedImageJPEG: jpeg, student: settings.student, todayText: today)
+            var req = PageRequest(documentName: documentName,
+                                  pageNumber: a.pageIndex + 1, pageCount: pageCount,
+                                  transcript: a.transcript, hasTextLayer: a.hasTextLayer, zones: pz,
+                                  markedImageJPEG: jpeg, student: settings.student, todayText: today)
+            if !holeCheck {
+                for z in pz { if let k = lockedKinds[z.id] { req.fixedKinds[z.number] = k } }
+            }
+            req.holeCheckOnly = holeCheck
+            return req
+        }
+
+        emit(0, work.isEmpty && doubtful.isEmpty ? "Aucune zone à remplir" : "Démarrage de \(engine.displayName)…", force: true)
+
+        // Contrôle facultatif : « vrai trou / pas un trou » pour les zones douteuses seulement (cache par signature).
+        if !doubtful.isEmpty {
+            emit(0, "Contrôle des zones douteuses…", force: true)
+            func verdict(_ isHole: Bool, zoneID: Int) {
+                guard let i = zones.firstIndex(where: { $0.id == zoneID }) else { return }
+                if isHole {
+                    zones[i].confidence = max(zones[i].confidence, 0.9)
+                    zones[i].signals.append("contrôlée par l'IA : vrai trou")
+                } else {
+                    zones[i].kind = .ignorer
+                    zones[i].enabled = false
+                    zones[i].answer = ""
+                    zones[i].rawAnswer = ""
+                    zones[i].signals.append("contrôlée par l'IA : pas un trou")
+                    notHoleIDs.insert(zoneID)
+                }
+            }
+            var pending: [Zone] = []
+            for z in doubtful {
+                let sig = ZoneSignature(zone: z, documentName: documentName).key
+                if let known = settings.holeCache.verdict(for: sig) { verdict(known, zoneID: z.id) } else { pending.append(z) }
+            }
+            for a in analyses {
+                let pageZones = pending.filter { $0.page == a.pageIndex }
+                if pageZones.isEmpty { continue }
+                try Task.checkCancellation()
+                guard let req = makeRequest(a, Set(pageZones.map { $0.number }), only: pageZones, holeCheck: true) else { continue }
+                do {
+                    let answers = try await engine.checkHoles(req)
+                    for z in pageZones {
+                        let isHole = answers[z.number] ?? true     // sans réponse : on garde le trou
+                        settings.holeCache.store(isHole, for: ZoneSignature(zone: z, documentName: documentName).key)
+                        verdict(isHole, zoneID: z.id)
+                    }
+                } catch {
+                    if Task.isCancelled || error is CancellationError || (error as? URLError)?.code == .cancelled { throw CancellationError() }
+                    if let e = error as? EngineError, e.isFatal { throw e }
+                    // contrôle impossible (réseau…) : les zones douteuses restent, la complétion continue
+                    emit(0, "Contrôle des zones douteuses impossible : \(error.localizedDescription)", force: true)
+                }
+            }
+            buildWork()
+            totalSteps = Double(max(work.count, 1) + holeCheckSteps) + (settings.humanize ? 1 : 0)
+            done = Double(holeCheckSteps)
+            emit(done / totalSteps, "Zones douteuses contrôlées", force: true)
+        } else {
+            emit(0, work.isEmpty ? "Aucune zone à remplir" : "Démarrage de \(engine.displayName)…", force: true)
         }
 
         var completedIDs = Set<Int>()      // zones remplies avec succès pendant CET appel (seules candidates à l'humanisation)
@@ -343,6 +431,11 @@ enum CoursPipeline {
                     zones[z].error = "L'IA n'a pas répondu pour cette zone."
                     continue
                 }
+                if a.kind == .ignorer && userDecided.contains(zones[z].id) {
+                    // l'élève a choisi le type : on ne le change pas, on lui dit que l'IA doute
+                    zones[z].error = "L'IA ne voit pas de trou ici, mais tu as choisi le type de cette zone : écris la réponse toi-même ou réessaie."
+                    continue
+                }
                 zones[z].error = nil
                 zones[z].humanized = false
                 if a.kind == .ignorer {
@@ -351,8 +444,10 @@ enum CoursPipeline {
                     zones[z].answer = ""
                     zones[z].rawAnswer = ""
                 } else {
-                    let text = AnswerCleaner.clean(a.text, kind: a.kind)
-                    zones[z].kind = a.kind
+                    // type décidé par une règle sûre ou par l'élève : l'IA ne le change pas
+                    let kind = lockedKinds[zones[z].id] ?? a.kind
+                    let text = AnswerCleaner.clean(a.text, kind: kind)
+                    zones[z].kind = kind
                     zones[z].enabled = !text.isEmpty
                     zones[z].answer = text
                     zones[z].rawAnswer = text

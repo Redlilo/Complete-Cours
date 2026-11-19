@@ -29,6 +29,10 @@ struct PageRequest {
     var markedImageJPEG: Data?
     var student: StudentProfile
     var todayText: String            // ex. « mardi 17 novembre 2026 »
+    /// Types déjà retenus par des règles sûres ou par l'élève (par `Zone.number`) : l'IA ne les change pas.
+    var fixedKinds: [Int: ZoneKind] = [:]
+    /// Contrôle des zones douteuses : l'IA dit seulement si chaque zone est un vrai trou (« ignorer » = pas un trou).
+    var holeCheckOnly = false
 }
 
 struct ZoneAnswer {

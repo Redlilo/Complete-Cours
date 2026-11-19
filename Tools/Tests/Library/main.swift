@@ -165,4 +165,75 @@ for personal in [("Facture EDF", ""), ("scan", "IBAN FR76 3000 6000 0112 3456 78
 }
 check(!PrivacyGate.looksPersonal(name: "Le pH", excerpt: "Séquence 1 : Chimie. Qu'est-ce que le pH ?"), "un cours n'est pas une pièce personnelle")
 
+// --- trois états : étiquettes, explication, filtre, original vide connu ---
+do {
+    func dg(_ zones: Int, _ remaining: Int, blank: Bool = false, eval: Bool = false) -> CourseDigest {
+        let r = CompletionReport(zones: zones, answered: zones - remaining, pages: 1, usedBlank: blank)
+        return CourseDigest(path: "x.pdf", isEvaluation: eval, excerpt: "", zones: zones, remaining: remaining,
+                            isIncomplete: r.state != .complet, state: r.state, usedBlank: blank)
+    }
+    check(dg(12, 12).badge == "À compléter" && dg(12, 12).state == .vide, "tout vide : « À compléter »")
+    check(dg(12, 3, blank: true).badge == "Partiel : 3 trous", "partiel : « Partiel : 3 trous » (\(dg(12, 3, blank: true).badge ?? "nil"))")
+    check(dg(12, 1, blank: true).badge == "Partiel : 1 trou", "un seul trou : singulier (original vide connu)")
+    check(dg(12, 0, blank: true).badge == "Complet", "plus aucun trou : « Complet »")
+    check(dg(12, 1).badge == "Complet", "sans original vide, un trou isolé n'empêche pas « Complet »")
+    check(dg(0, 0).badge == nil && dg(5, 5, eval: true).badge == nil, "ni trou détecté ni évaluation : pas d'étiquette")
+    check(dg(12, 3, blank: true).explanation.hasPrefix("3 trous sur 12 sans réponse"), "explication : \(dg(12, 3, blank: true).explanation)")
+    check(dg(12, 3).explanation.contains("estimation"), "sans original vide : l'explication le dit")
+    check(dg(12, 3, blank: true).needsCompletion && !dg(12, 0, blank: true).needsCompletion && !dg(5, 5, eval: true).needsCompletion, "needsCompletion")
+
+    let root = URL(fileURLWithPath: "/C")
+    let paths = ["Maths/vide.pdf", "Maths/part.pdf", "Maths/fini.pdf", "Maths/Sous/part2.pdf", "Sciences/inconnu.pdf",
+                 "Sciences/Original.pdf", "Sciences/Original (complétée).pdf"]
+    let files = paths.map { LibraryTree.makeFile(root: root, url: root.appendingPathComponent($0))! }
+    var states: [URL: CourseDigest] = [:]
+    func put(_ p: String, _ d: CourseDigest) { states[root.appendingPathComponent(p)] = d }
+    put("Maths/vide.pdf", dg(10, 10)); put("Maths/part.pdf", dg(10, 4, blank: true)); put("Maths/fini.pdf", dg(10, 0, blank: true))
+    put("Maths/Sous/part2.pdf", dg(10, 6, blank: true)); put("Sciences/Original.pdf", dg(8, 8))
+    let tree = LibraryTree.build(files)
+    func names(_ f: CourseStateFilter, hidden: Set<URL> = []) -> [String] {
+        let t = f.prune(tree, states: states, hidden: hidden)
+        return LibraryTree.rows(root: t, expanded: Set(LibraryTree.folderIDs(t)), query: "").compactMap { r -> String? in
+            if case .file(let file) = r.content { return file.name }; return nil }.sorted()
+    }
+    check(names(.all).count == 7, "filtre « tous » : tout")
+    check(names(.vide) == ["Original", "vide"], "filtre vides : \(names(.vide))")
+    check(names(.partiel) == ["part", "part2"], "filtre partiels : \(names(.partiel))")
+    check(names(.open) == ["Original", "part", "part2", "vide"], "à compléter ou partiels : \(names(.open))")
+    check(names(.complet) == ["fini"], "complets : \(names(.complet))")
+    check(names(.open, hidden: [root.appendingPathComponent("Sciences/Original.pdf")]) == ["part", "part2", "vide"], "original déjà complété à côté : écarté")
+    let prunedOpen = CourseStateFilter.open.prune(tree, states: states)
+    check(!LibraryTree.folderIDs(prunedOpen).contains("Sciences/Cours") && prunedOpen.folders.map(\.name).sorted() == ["Maths", "Sciences"], "dossiers sans cours correspondant retirés")
+    check(CourseStateFilter.complet.prune(tree, states: [:]).count == 0, "aucun état connu : rien ne correspond")
+
+    // original vide connu
+    let fm = FileManager.default
+    let tmp = fm.temporaryDirectory.appendingPathComponent("etats-\(getpid())").resolvingSymlinksInPath()
+    try? fm.removeItem(at: tmp); try! fm.createDirectory(at: tmp, withIntermediateDirectories: true)
+    defer { try? fm.removeItem(at: tmp) }
+    func touch(_ rel: String) -> URL { let u = tmp.appendingPathComponent(rel); try! fm.createDirectory(at: u.deletingLastPathComponent(), withIntermediateDirectories: true); fm.createFile(atPath: u.path, contents: Data("x".utf8)); return u }
+    let o1 = touch("Maths/Cours.pdf"), c1 = touch("Maths/Cours (complétée).pdf")
+    let o2 = touch("_Originaux avant completion/Sciences/Atome.pdf"), c2 = touch("Sciences/Atome - rempli.pdf")
+    let o3 = touch("Histoire/Notes.pdf"), c3 = touch("Histoire/Notes (complétée).pdf")
+    let solo = touch("Histoire/Seul.pdf"), ev = touch("Maths/Évaluations/DS 1.pdf")
+    let all = LibraryTree.scan(tmp)
+    func blank(_ u: URL, _ comps: [CompletionRecord] = [], _ moves: [MoveRecord] = []) -> URL? {
+        OriginalsArchive.blankOriginal(for: all.first { $0.url.resolvingSymlinksInPath().path == u.resolvingSymlinksInPath().path }!, files: all, root: tmp, completions: comps, moves: moves)?.resolvingSymlinksInPath()
+    }
+    check(blank(c1) == o1, "original vide à côté, par le nom")
+    check(blank(c2) == o2, "original rangé dans le dossier des originaux")
+    check(blank(o1) == nil && blank(solo) == nil, "un original ou un cours seul n'a pas d'original vide")
+    check(blank(ev) == nil, "jamais pour une évaluation")
+    check(blank(o2) == nil, "rien pour un fichier du dossier des originaux")
+    let rec = CompletionRecord(original: o3.path, copy: c3.path, date: Date(), engine: "t")
+    check(blank(c3, [rec]) == o3, "complétion du journal")
+    let weird = touch("Histoire/Copie finale.pdf")
+    let all2 = LibraryTree.scan(tmp)
+    let rec2 = CompletionRecord(original: o3.path, copy: weird.path, date: Date(), engine: "t")
+    check(OriginalsArchive.blankOriginal(for: all2.first { $0.url.resolvingSymlinksInPath().path == weird.path }!, files: all2, root: tmp, completions: [rec2])?.resolvingSymlinksInPath() == o3, "copie au nom libre : retrouvée par le journal")
+    let gone = CompletionRecord(original: tmp.appendingPathComponent("Histoire/Disparu.pdf").path, copy: weird.path, date: Date(), engine: "t")
+    let mv = MoveRecord(id: UUID(), from: gone.original, to: o2.path, date: Date(), origin: .originaux)
+    check(OriginalsArchive.blankOriginal(for: all2.first { $0.url.resolvingSymlinksInPath().path == weird.path }!, files: all2, root: tmp, completions: [gone], moves: [mv])?.resolvingSymlinksInPath() == o2, "original rangé depuis : suit le journal des déplacements")
+}
+
 if failures == 0 { print("Library : tout est bon.") } else { print("Library : \(failures) échec(s)."); exit(1) }

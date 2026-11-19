@@ -77,6 +77,23 @@ if let props = ((Prompts.completionSchema["properties"] as? [String: Any])?["zon
     check(Set(en) == Set(ZoneKind.allCases.map { $0.rawValue }), "enum du schéma = ZoneKind")
 } else { check(false, "enum du schéma introuvable") }
 
+
+// Types retenus et contrôle des trous.
+do {
+    var r = req("Définis ⟦1⟧ et complète ⟦2⟧.", zones: [zone(1, kind: .definition), zone(2, kind: .mot)])
+    r.fixedKinds = [1: .definition]
+    let t = Prompts.completionUserText(r)
+    check(t.contains("type retenu : definition (décidé, à garder)"), "type certain : ligne « type retenu »")
+    check(t.contains("type probable : mot") && t.components(separatedBy: "type retenu").count == 2, "type ambigu : « type probable » seulement")
+    check(t.contains("type probable : definition"), "la ligne principale garde le format « type probable : x » (lue par les faux serveurs)")
+    check(cs.contains("type retenu") && cs.contains("garde exactement ce type"), "le prompt système explique « type retenu »")
+    check(cs.contains("contrôle des trous"), "le prompt système décrit le mode contrôle des trous")
+    var c = r; c.holeCheckOnly = true
+    let tc = Prompts.completionUserText(c)
+    check(tc.contains("Mode : contrôle des trous") && !tc.contains("Mode : Cours"), "mode contrôle : annoncé dans le message")
+    check(Prompts.completionUserText(req("", zones: [zone(1)])).contains("Mode : Cours"), "mode normal inchangé")
+}
+
 // Humanisation.
 func item(_ id: Int, _ kind: ZoneKind, _ q: String, _ a: String, _ m: Int = 120) -> HumanizeItem {
     HumanizeItem(id: id, kind: kind, question: q, answer: a, maxChars: m)

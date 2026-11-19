@@ -97,7 +97,10 @@ final class AnalysisModel: ObservableObject {
 
     @Published var phase: Phase = .idle
     @Published var suggestions: [AnalysisSuggestion] = []
+    /// Cours à compléter : vides puis partiels (voir `empties` et `partials`).
     @Published var incomplete: [CourseDigest] = []
+    var empties: [CourseDigest] { incomplete.filter { $0.state == .vide } }
+    var partials: [CourseDigest] { incomplete.filter { $0.state == .partiel } }
     @Published var moveChoice = Set<String>()
     @Published var completeChoice = Set<String>()
     @Published var note: String?
@@ -126,7 +129,8 @@ final class AnalysisModel: ObservableObject {
         guard !isBusy else { return }
         hasRun = true
         let library = LibraryModel.shared
-        let root = library.root, files = library.files.filter { $0.folders.first?.hasPrefix("_") != true }
+        let root = library.root, allFiles = library.files
+        let files = allFiles.filter { $0.folders.first?.hasPrefix("_") != true }
         suggestions = []; incomplete = []; note = nil; batchReport = nil; pageCache = [:]
         rereadCount = 0; unchangedCount = 0
         phase = .reading(0)
@@ -134,17 +138,25 @@ final class AnalysisModel: ObservableObject {
         task = Task {
             var digests: [CourseDigest] = []
             var pairs: [(url: URL, digest: CourseDigest)] = []
+            let completions = ledger.completions, moves = ledger.moves
             for (i, f) in files.enumerated() {
                 if Task.isCancelled { phase = .idle; return }
-                let (d, cached) = await Task.detached(priority: .userInitiated) { CourseAnalysis.digest(f, ledger: ledger, force: force) }.value
+                // l'original vide de ce cours, s'il est connu : les trous sont alors comparés à lui
+                let (d, cached) = await Task.detached(priority: .userInitiated) { () -> (digest: CourseDigest, fromCache: Bool) in
+                    let blank = OriginalsArchive.blankOriginal(for: f, files: allFiles, root: root, completions: completions, moves: moves)
+                    return CourseAnalysis.digest(f, ledger: ledger, force: force, blank: blank)
+                }.value
                 digests.append(d); pairs.append((f.url, d))
                 if cached { unchangedCount += 1 } else { rereadCount += 1 }
                 phase = .reading(Double(i + 1) / Double(max(files.count, 1)))
             }
             ledger.replaceDigests(pairs)
             checkedCount = digests.count
-            // un cours déjà complété par l'app (ou sa copie) n'est plus proposé
-            incomplete = digests.filter { $0.isIncomplete && !ledger.isCompletedByApp(root.appendingPathComponent($0.path)) }
+            library.reloadStates()
+            // un cours déjà complété par l'app (ou sa copie), ou dont la version complétée est à côté, n'est plus proposé
+            let archivable = Set(OriginalsArchive.plan(files: allFiles, root: root, completions: ledger.completions).map { $0.original.standardizedFileURL.path })
+            incomplete = digests.filter { $0.needsCompletion && !ledger.isCompletedByApp(root.appendingPathComponent($0.path))
+                                          && !archivable.contains(root.appendingPathComponent($0.path).standardizedFileURL.path) }
             completeChoice = Set(incomplete.map(\.path))
             do {
                 let generator = try AnalysisEngine.generator()
@@ -414,6 +426,29 @@ struct AnalysisSheet: View {
         }
     }
 
+    /// Une ligne « à compléter » : case, nom, nombre de trous restants, et « voir les zones » qui ouvre l'écran Compléter.
+    private func courseToggle(_ d: CourseDigest) -> some View {
+        HStack {
+            Toggle(isOn: Binding(get: { model.completeChoice.contains(d.path) },
+                                 set: { if $0 { model.completeChoice.insert(d.path) } else { model.completeChoice.remove(d.path) } })) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text((d.path as NSString).lastPathComponent).font(.body.weight(.medium))
+                    Text("\(d.remaining) \(Fr.plural(d.remaining, "trou restant", "trous restants")) sur \(d.zones) · \((d.path as NSString).deletingLastPathComponent)")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            .help(d.explanation)
+            Spacer()
+            Button("voir les zones") {
+                let url = LibraryModel.shared.root.appendingPathComponent(d.path)
+                dismiss()
+                Navigator.shared.complete(url)
+            }
+            .buttonStyle(.link).font(.caption)
+            .help("Ouvrir ce cours dans l'écran Compléter pour voir les zones détectées")
+        }
+    }
+
     private func progress(_ text: String, _ p: Double) -> some View {
         VStack(spacing: 12) {
             ProgressView(value: p).frame(maxWidth: 360)
@@ -453,18 +488,15 @@ struct AnalysisSheet: View {
                     .disabled(model.moveChoice.isEmpty || model.suggestions.isEmpty)
             }
             Section("Historique des rangements (\(history.moves.count))") { MoveHistoryRows() }
-            Section("À compléter (\(model.incomplete.count))") {
-                if model.incomplete.isEmpty { Text("Aucun cours avec des trous restants.").foregroundStyle(.secondary) }
-                ForEach(model.incomplete, id: \.path) { d in
-                    Toggle(isOn: Binding(get: { model.completeChoice.contains(d.path) },
-                                         set: { if $0 { model.completeChoice.insert(d.path) } else { model.completeChoice.remove(d.path) } })) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text((d.path as NSString).lastPathComponent).font(.body.weight(.medium))
-                            Text("\(d.remaining) trou(s) sans réponse sur \(d.zones) · \((d.path as NSString).deletingLastPathComponent)")
-                                .font(.caption).foregroundStyle(.secondary)
-                        }
-                    }
-                }
+            Section("Vides : à compléter (\(model.empties.count))") {
+                if model.empties.isEmpty { Text("Aucun cours vide.").foregroundStyle(.secondary) }
+                ForEach(model.empties, id: \.path) { d in courseToggle(d) }
+            }
+            Section("Partiels : il reste des trous (\(model.partials.count))") {
+                if model.partials.isEmpty { Text("Aucun cours partiellement rempli.").foregroundStyle(.secondary) }
+                ForEach(model.partials, id: \.path) { d in courseToggle(d) }
+            }
+            Section("Compléter la sélection") {
                 if let b = model.batch {
                     ProgressView(value: min(Double(b.done) + model.batchFraction, Double(b.total)), total: Double(b.total)) {
                         Text("« \(b.current) » (\(b.done + 1)/\(b.total))")
@@ -475,7 +507,7 @@ struct AnalysisSheet: View {
                     Button("Compléter la sélection…") { model.completeSelected() }.disabled(model.completeChoice.isEmpty)
                 }
                 if let r = model.batchReport { Text(r).font(.callout).textSelection(.enabled) }
-                Text("Détection locale : un cours déjà rempli peut parfois apparaître ici, vérifie la liste avant de lancer. Les cours déjà complétés par l'app n'y figurent plus.")
+                Text("Détection locale : un cours déjà rempli peut parfois apparaître ici, vérifie la liste avant de lancer (« voir les zones » ouvre le cours). Les cours déjà complétés par l'app n'y figurent plus.")
                     .font(.caption).foregroundStyle(.secondary)
             }
         }

@@ -16,6 +16,11 @@ final class LibraryModel: ObservableObject {
     @Published private(set) var isScanning = false
     @Published private(set) var problem: String?
     @Published var selected: LibraryFile?
+    /// Dernier état connu de chaque cours (lu dans le journal : jamais de lecture de PDF ici). Vide tant que
+    /// « Analyser » n'a pas tourné.
+    @Published private(set) var states: [URL: CourseDigest] = [:]
+    /// Originaux vides dont la version complétée existe déjà : pas « à compléter ».
+    @Published private(set) var pairedOriginals: Set<URL> = []
     @Published var root: URL
     /// Indexation du contenu en cours : (cours lus, total). nil quand il n'y a rien à lire.
     @Published private(set) var indexProgress: (done: Int, total: Int)?
@@ -111,6 +116,7 @@ final class LibraryModel: ObservableObject {
             files = found
             tree = LibraryTree.build(found)
             isScanning = false
+            reloadStates()
             startIndexing(found)
             if !FileManager.default.fileExists(atPath: root.path) {
                 problem = "Le dossier « \(root.lastPathComponent) » est introuvable. Choisis le dossier de tes cours."
@@ -118,6 +124,24 @@ final class LibraryModel: ObservableObject {
                 problem = "Aucun PDF trouvé dans « \(root.lastPathComponent) »."
             }
         }
+    }
+
+    /// Relit les états gardés par le journal (après un scan ou une analyse).
+    func reloadStates() {
+        let found = files, root = self.root
+        Task {
+            let (s, paired) = await Task.detached(priority: .utility) { () -> ([URL: CourseDigest], Set<URL>) in
+                let ledger = CourseLedger.shared
+                let plan = OriginalsArchive.plan(files: found, root: root, completions: ledger.completions)
+                return (ledger.cachedStates(for: found), Set(plan.map { $0.original }))
+            }.value
+            states = s; pairedOriginals = paired
+        }
+    }
+
+    /// État affiché pour ce cours (nil : inconnu, ou original vide dont la copie complétée existe).
+    func digest(for file: LibraryFile) -> CourseDigest? {
+        pairedOriginals.contains(file.url) ? nil : states[file.url]
     }
 
     func toggle(_ id: String) {
@@ -232,8 +256,13 @@ struct LibraryView: View {
 
     @ObservedObject private var recents = Recents.shared
 
+    @State private var stateFilter: CourseStateFilter = .all
+
     private var rows: [LibraryRow] {
-        LibraryTree.rows(root: library.tree, expanded: library.expanded, query: search)
+        guard stateFilter != .all else { return LibraryTree.rows(root: library.tree, expanded: library.expanded, query: search) }
+        // filtre d'état : seuls les cours correspondants, tous les dossiers dépliés
+        let pruned = stateFilter.prune(library.tree, states: library.states, hidden: library.pairedOriginals)
+        return LibraryTree.rows(root: pruned, expanded: Set(LibraryTree.folderIDs(pruned)), query: search)
     }
     private var searching: Bool { !search.trimmingCharacters(in: .whitespaces).isEmpty }
 
@@ -275,7 +304,11 @@ struct LibraryView: View {
     private var listPane: some View {
         Group {
             if rows.isEmpty && library.contentHits.isEmpty && !library.isScanning {
-                ContentUnavailableView.search(text: search)
+                if stateFilter != .all {
+                    ContentUnavailableView("Aucun cours « \(stateFilter.title.lowercased()) »", systemImage: "line.3.horizontal.decrease.circle",
+                                           description: Text(library.states.isEmpty ? "Lance « Analyser » : l'app lit les cours pour savoir lesquels ont des trous."
+                                                                                    : "Change de filtre pour voir les autres cours."))
+                } else { ContentUnavailableView.search(text: search) }
             } else {
                 ScrollView {
                     LazyVStack(spacing: 4) {
@@ -373,6 +406,15 @@ struct LibraryView: View {
             Button { showAnalysis = true } label: { Label("Analyser", systemImage: "sparkle.magnifyingglass") }
                 .buttonStyle(.bordered).controlSize(.large)
                 .help("Lire tous les cours pour proposer de les réorganiser ou de les compléter")
+            Menu {
+                Picker("Filtrer par état", selection: $stateFilter) {
+                    ForEach(CourseStateFilter.allCases, id: \.self) { Text($0.title).tag($0) }
+                }.pickerStyle(.inline)
+            } label: {
+                Label(stateFilter == .all ? "Filtre" : stateFilter.title, systemImage: stateFilter == .all ? "line.3.horizontal.decrease.circle" : "line.3.horizontal.decrease.circle.fill")
+            }
+            .menuStyle(.borderlessButton).fixedSize().controlSize(.large)
+            .help("N'afficher que les cours à compléter ou partiels (d'après la dernière analyse)")
             Button { showDuplicates = true } label: { Label("Doublons", systemImage: "square.on.square") }
                 .buttonStyle(.bordered).controlSize(.large)
                 .help("Supprimer les doublons : lit tous les PDF, compare, et met à la Corbeille ce que tu valides")
@@ -438,10 +480,22 @@ private struct FolderRowView: View {
 /// Étiquettes d'état : « Évaluation », « Complété par l'app » (copie faite par l'app, d'après le journal) ou l'état lu dans le nom.
 private struct StateTags: View {
     let file: LibraryFile
+    @ObservedObject private var library = LibraryModel.shared
     var body: some View {
         if file.isEvaluation { Tag(text: "Évaluation", color: .orange) }
-        if CourseLedger.shared.isAppCopy(file.url) { Tag(text: "Complété par l'app", color: .green) }
+        let d = library.digest(for: file)
+        let appCopy = CourseLedger.shared.isAppCopy(file.url)
+        if appCopy, d == nil || d?.state == .complet { Tag(text: "Complété par l'app", color: .green) }
+        else if let d, let badge = d.badge { Tag(text: badge, color: d.badgeColor).help(d.explanation) }
+        else if appCopy { Tag(text: "Complété par l'app", color: .green) }
         else if let label = file.state.label { Tag(text: label, color: .secondary) }
+    }
+}
+
+extension LibraryModel {
+    /// Proposer « Compléter » : le nom le dit vierge, ou la dernière analyse a trouvé des trous restants.
+    func canComplete(_ file: LibraryFile) -> Bool {
+        file.state == .vierge || digest(for: file)?.needsCompletion == true
     }
 }
 
@@ -488,7 +542,7 @@ private struct FileRowView: View {
             if file.isEvaluation {
                 Button("Corriger") { Recents.shared.touch(file.url); navigator.correct(file.url) }.buttonStyle(.borderedProminent)
             } else {
-                if file.state == .vierge { Button("Compléter") { Recents.shared.touch(file.url); navigator.complete(file.url) }.buttonStyle(.borderedProminent) }
+                if library.canComplete(file) { Button("Compléter") { Recents.shared.touch(file.url); navigator.complete(file.url) }.buttonStyle(.borderedProminent) }
                 Button("Fiche") { Recents.shared.touch(file.url); navigator.makeSheet(file.url) }.buttonStyle(.bordered)
             }
         }
@@ -498,7 +552,7 @@ private struct FileRowView: View {
     private func openByDefault() {
         Recents.shared.touch(file.url)
         if file.isEvaluation { navigator.correct(file.url) }
-        else if file.state == .vierge { navigator.complete(file.url) }
+        else if library.canComplete(file) { navigator.complete(file.url) }
         else { navigator.makeSheet(file.url) }
     }
 }
@@ -507,6 +561,7 @@ private struct FileRowView: View {
 private struct DocumentPreview: View {
     let file: LibraryFile
     @EnvironmentObject var navigator: Navigator
+    @ObservedObject private var library = LibraryModel.shared
 
     var body: some View {
         VStack(spacing: 0) {
@@ -519,7 +574,7 @@ private struct DocumentPreview: View {
                     if file.isEvaluation {
                         Button("Corriger") { Recents.shared.touch(file.url); navigator.correct(file.url) }.buttonStyle(.borderedProminent)
                     } else {
-                        if file.state == .vierge { Button("Compléter") { Recents.shared.touch(file.url); navigator.complete(file.url) }.buttonStyle(.borderedProminent) }
+                        if library.canComplete(file) { Button("Compléter") { Recents.shared.touch(file.url); navigator.complete(file.url) }.buttonStyle(.borderedProminent) }
                         Button("Fiche") { Recents.shared.touch(file.url); navigator.makeSheet(file.url) }.buttonStyle(.bordered)
                     }
                     Button { NSWorkspace.shared.activateFileViewerSelecting([file.url]) } label: { Image(systemName: "folder") }

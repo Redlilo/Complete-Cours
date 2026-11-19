@@ -13,7 +13,91 @@ struct CourseDigest: Equatable {
     var excerpt: String         // début de la page 1 (vide pour une évaluation)
     var zones = 0               // trous détectés (PDF de cours seulement)
     var remaining = 0           // dont encore sans réponse
-    var isIncomplete = false
+    var isIncomplete = false    // il reste des trous (état « vide » ou « partiel »)
+    /// État à trois valeurs : à compléter (vide), partiel, complet. Un cours sans trou détecté est « complet ».
+    var state: CompletionState
+    /// L'état vient de la comparaison avec l'original vide (fiable), pas d'une estimation.
+    var usedBlank = false
+    /// Original vide fourni à la lecture (chemin absolu), pour savoir si le résumé gardé est encore valable.
+    var blankPath: String?
+
+    /// `state` absent : déduit de `zones`, `remaining` et `isIncomplete` (anciens journaux, tests).
+    init(path: String, isEvaluation: Bool, excerpt: String, zones: Int = 0, remaining: Int = 0, isIncomplete: Bool = false,
+         state: CompletionState? = nil, usedBlank: Bool = false, blankPath: String? = nil) {
+        self.path = path; self.isEvaluation = isEvaluation; self.excerpt = excerpt
+        self.zones = zones; self.remaining = remaining; self.isIncomplete = isIncomplete
+        self.usedBlank = usedBlank; self.blankPath = blankPath
+        self.state = state ?? Self.derivedState(zones: zones, remaining: remaining, isIncomplete: isIncomplete)
+    }
+
+    static func derivedState(zones: Int, remaining: Int, isIncomplete: Bool) -> CompletionState {
+        guard zones > 0, isIncomplete else { return .complet }
+        return CompletionReport(zones: zones, answered: max(0, zones - remaining), pages: 0).state == .vide ? .vide : .partiel
+    }
+
+    /// Cours à traiter : vide ou partiel (jamais une évaluation).
+    var needsCompletion: Bool { !isEvaluation && state != .complet }
+
+    private static func holes(_ n: Int) -> String { n > 1 ? "\(n) trous" : "\(n) trou" }
+
+    /// Étiquette de la bibliothèque : « À compléter », « Partiel : 3 trous », « Complet ». nil : rien à dire
+    /// (évaluation, ou aucun trou détecté).
+    var badge: String? {
+        guard !isEvaluation, zones > 0 else { return nil }
+        switch state {
+        case .vide: return "À compléter"
+        case .partiel: return "Partiel : \(Self.holes(remaining))"
+        case .complet: return "Complet"
+        }
+    }
+
+    /// Une phrase qui explique le classement (info-bulle) : « 3 trous sur 12 sans réponse ».
+    var explanation: String {
+        if isEvaluation { return "Évaluation : l'app ne la lit pas." }
+        if zones == 0 { return "Aucun trou détecté dans ce cours." }
+        let basis = usedBlank ? "d'après l'original vide" : "estimation sans l'original vide"
+        switch state {
+        case .complet: return remaining == 0 ? "Les \(zones) trous ont une réponse (\(basis))."
+                                              : "\(remaining) sur \(zones) sans réponse : trop peu pour y toucher (\(basis))."
+        case .vide, .partiel: return "\(Self.holes(remaining)) sur \(zones) sans réponse (\(basis))."
+        }
+    }
+}
+
+enum CourseStateFilter: String, CaseIterable {
+    case all, open, vide, partiel, complet
+
+    var title: String {
+        switch self {
+        case .all: return "Tous les cours"
+        case .open: return "À compléter ou partiels"
+        case .vide: return "À compléter (vides)"
+        case .partiel: return "Partiels"
+        case .complet: return "Complets"
+        }
+    }
+
+    /// Un cours dont l'état n'est pas connu (jamais analysé) ne correspond à aucun filtre, sauf « tous ».
+    func matches(_ d: CourseDigest?) -> Bool {
+        if self == .all { return true }
+        guard let d, !d.isEvaluation, d.zones > 0 else { return false }
+        switch self {
+        case .all: return true
+        case .open: return d.state != .complet
+        case .vide: return d.state == .vide
+        case .partiel: return d.state == .partiel
+        case .complet: return d.state == .complet
+        }
+    }
+
+    /// Arbre réduit aux cours qui correspondent (les dossiers vides disparaissent). `hidden` : cours à écarter
+    /// (originaux vides dont la version complétée existe déjà).
+    func prune(_ folder: LibraryFolder, states: [URL: CourseDigest], hidden: Set<URL> = []) -> LibraryFolder {
+        var kept = folder
+        kept.files = folder.files.filter { !hidden.contains($0.url) && matches(states[$0.url]) }
+        kept.folders = folder.folders.map { prune($0, states: states, hidden: hidden) }.filter { $0.count > 0 }
+        return kept
+    }
 }
 
 struct AnalysisSuggestion: Identifiable, Equatable {
@@ -29,21 +113,26 @@ enum CourseAnalysis {
 
     /// Résumé d'un fichier, relu seulement s'il est nouveau ou modifié (taille ou date) depuis le journal.
     /// `force` : relit tout. `fromCache` dit si la lecture a été évitée.
-    static func digest(_ file: LibraryFile, ledger: CourseLedger?, force: Bool = false) -> (digest: CourseDigest, fromCache: Bool) {
+    /// `blank` : l'original vide de ce cours s'il est connu (voir `OriginalsArchive.blankOriginal`) : les trous
+    /// sont alors comparés à lui, et un résumé gardé avec un autre original (ou un original modifié) est relu.
+    static func digest(_ file: LibraryFile, ledger: CourseLedger?, force: Bool = false, blank: URL? = nil) -> (digest: CourseDigest, fromCache: Bool) {
         // un résumé gardé avant que le fichier devienne une évaluation (déplacé, renommé) n'est plus valable
-        if !force, let ledger, let hit = ledger.cachedDigest(for: file.url, relativePath: file.relativePath),
+        if !force, let ledger, let hit = ledger.cachedDigest(for: file.url, relativePath: file.relativePath, blank: blank),
            !(file.isEvaluation && !hit.isEvaluation) { return (hit, true) }
-        return (digest(file), false)
+        return (digest(file, blank: blank), false)
     }
 
-    static func digest(_ file: LibraryFile) -> CourseDigest {
+    static func digest(_ file: LibraryFile, blank: URL? = nil) -> CourseDigest {
         var d = CourseDigest(path: file.relativePath, isEvaluation: file.isEvaluation, excerpt: "")
         guard !file.isEvaluation, file.url.pathExtension.lowercased() == "pdf" else { return d }
         d.excerpt = firstPageText(file.url)
         // une évaluation au nom neutre (« Maths_T2.pdf ») se reconnaît à son en-tête : on la traite comme telle
         if LibraryTree.headerLooksLikeEvaluation(d.excerpt) { d.isEvaluation = true; d.excerpt = ""; return d }
-        if let r = CompletionStatus.report(url: file.url) {
-            d.zones = r.zones; d.remaining = r.remaining; d.isIncomplete = r.isIncomplete
+        d.blankPath = blank?.standardizedFileURL.path
+        if let r = CompletionStatus.report(url: file.url, blankOriginal: blank) {
+            d.zones = r.zones; d.remaining = r.remaining
+            d.state = r.state; d.usedBlank = r.usedBlank
+            d.isIncomplete = r.state != .complet
         }
         return d
     }

@@ -30,7 +30,8 @@ enum Prompts {
 
     Repères pour bien faire :
     - Appuie-toi d'abord sur le document (texte, tableaux, schémas, documents joints, autres zones de la page), puis sur le programme et les connaissances courantes du niveau. Une réponse trouvée ailleurs dans la page vaut mieux qu'une réponse générale.
-    - Le champ « type probable » est une estimation automatique : corrige-la quand le contexte montre autre chose.
+    - Le champ « type probable » est une estimation automatique : corrige-la quand le contexte montre autre chose. Une ligne « type retenu » sous une zone signifie que le type est déjà décidé (règle sûre ou choix de l'élève) : garde exactement ce type et écris la réponse qui lui correspond ; tu peux seulement répondre "ignorer" si la zone n'est pas un vrai trou.
+    - Mode « contrôle des trous » (indiqué dans le message) : pour chaque zone listée, réponds "ignorer" avec un texte vide si ce n'est pas un vrai trou à remplir (trait décoratif, pied de page, souligné de titre, bord de tableau, schéma, zone déjà remplie) ; sinon garde le type indiqué, avec un texte vide.
     - « capacité » est le nombre de caractères que la zone peut contenir. Reste dedans : une réponse plus courte mais juste vaut mieux qu'une réponse coupée.
     - Champs d'identité (nom, prénom, classe, date…) : utilise le profil de l'élève et la date du jour fournis (date au format JJ/MM/AAAA sauf si le champ montre un autre format) ; sans la donnée, choisis "ignorer".
     - Écris en français correct (orthographe, accents), avec le niveau d'un élève de seconde : clair, juste, sans jargon inutile.
@@ -74,7 +75,11 @@ enum Prompts {
     /// Texte du message utilisateur pour une page (l'image, si elle existe, est envoyée avant ce texte).
     static func completionUserText(_ r: PageRequest) -> String {
         var s = "Document : « \(r.documentName) » — page \(r.pageNumber) sur \(r.pageCount)\n"
-        s += "Mode : Cours. Complète les zones en t’appuyant sur le contenu et le contexte du cours.\n"
+        if r.holeCheckOnly {
+            s += "Mode : contrôle des trous. Ne rédige aucune réponse : pour chaque zone, dis seulement si c'est un vrai trou à remplir (garde le type indiqué, texte vide) ou non (type \"ignorer\", texte vide).\n"
+        } else {
+            s += "Mode : Cours. Complète les zones en t’appuyant sur le contenu et le contexte du cours.\n"
+        }
         if !r.student.isEmpty {
             s += "Profil de l'élève (à utiliser seulement pour les champs d'identité) : nom = \(r.student.nom), prénom = \(r.student.prenom), classe = \(r.student.classe)\n"
         }
@@ -90,7 +95,10 @@ enum Prompts {
 
         s += "Zones à remplir :\n"
         for z in r.zones {
-            s += "⟦\(z.number)⟧ — \(nature(of: z)) — capacité ≈ \(z.capacity) caractères — type probable : \(z.kind.rawValue)\n"
+            // la ligne principale garde son format (lu par les faux serveurs de test) ; un type décidé s'ajoute en dessous
+            let kind = r.fixedKinds[z.number] ?? z.kind
+            s += "⟦\(z.number)⟧ — \(nature(of: z)) — capacité ≈ \(z.capacity) caractères — type probable : \(kind.rawValue)\n"
+            if let fixed = r.fixedKinds[z.number] { s += "    type retenu : \(fixed.rawValue) (décidé, à garder)\n" }
             let before = z.contextBefore.replacingOccurrences(of: "\n", with: " ")
             let after = z.contextAfter.replacingOccurrences(of: "\n", with: " ")
             if !before.isEmpty { s += "    avant : « …\(before.suffix(240)) »\n" }

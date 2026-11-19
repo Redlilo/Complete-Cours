@@ -114,6 +114,26 @@ do {
     doc.write(to: pdfURL)
 }
 
+/// Zone de test dont le contexte donne, par les règles locales, le type voulu (n % 3 : 0 mot, 1 définition, 2 question).
+func fixtureZone(id: Int, page: Int, number n: Int, y: CGFloat) -> Zone {
+    var z = Zone(id: id, page: page, number: n, source: .texte)
+    switch n % 3 {
+    case 0:
+        z.kind = .mot
+        z.lines = [WritingLine(x0: 50, x1: 170, y: y)]
+        z.contextBefore = "Le courant se mesure en"; z.contextAfter = "(A) dans un circuit."
+    case 1:
+        z.kind = .definition
+        z.lines = [WritingLine(x0: 50, x1: 300, y: y)]
+        z.contextBefore = "Question \(n) : définis la notion."
+    default:
+        z.kind = .question
+        z.lines = [WritingLine(x0: 50, x1: 300, y: y)]
+        z.contextBefore = "Question \(n) : explique pourquoi le circuit chauffe."
+    }
+    return z
+}
+
 func makeZones() -> ([PageAnalysis], [Zone]) {
     var zones: [Zone] = []
     var analyses: [PageAnalysis] = []
@@ -123,10 +143,7 @@ func makeZones() -> ([PageAnalysis], [Zone]) {
         let count = [7, 4, 70][p]
         var pageZones: [Zone] = []
         for n in 1...count {
-            var z = Zone(id: id, page: p, number: n, source: .texte)
-            z.lines = [WritingLine(x0: 50, x1: 300, y: 700 - CGFloat(n) * 8)]
-            z.kind = [ZoneKind.mot, .definition, .question][n % 3]
-            z.contextBefore = "Question \(n) : définis la notion."
+            let z = fixtureZone(id: id, page: p, number: n, y: 700 - CGFloat(n) * 8)
             pageZones.append(z); id += 1
         }
         zones += pageZones
@@ -235,9 +252,7 @@ func makeBig(pages: Int, zonesPerPage: Int) -> ([PageAnalysis], [Zone]) {
     for p in 0..<pages {
         var pz: [Zone] = []
         for n in 1...zonesPerPage {
-            var z = Zone(id: id, page: p, number: n, source: .texte)
-            z.lines = [WritingLine(x0: 50, x1: 300, y: 700 - CGFloat(n) * 20)]
-            z.kind = [ZoneKind.mot, .definition, .question][n % 3]
+            let z = fixtureZone(id: id, page: p, number: n, y: 700 - CGFloat(n) * 20)
             pz.append(z); id += 1
         }
         zones += pz
@@ -521,6 +536,253 @@ check(cl("**Volt**") == "Volt" && cl("`Volt`") == "Volt" && cl("- Volt") == "Vol
 check(cl("Il fait 3,5.", .question) == "Il fait 3,5.", "nettoyage : phrase (question) garde son point final")
 check(cl("Volt\u{200B}") == "Volt" && cl("Le  courant   passe", .question) == "Le courant passe", "nettoyage : espaces et caractères invisibles")
 check(["«\u{00A0}Volt\u{00A0}».", "etc.", "\"a\" et \"b\"", "3,5.", "résistances, etc.."].allSatisfy { cl(cl($0)) == cl($0) }, "nettoyage : idempotent")
+
+
+// ============ Types stables, règles locales, contrôle facultatif des zones douteuses ============
+
+func ruleZone(before: String = "", after: String = "", width: CGFloat = 250, lines: Int = 1,
+              source: ZoneSource = .texte, box: CGRect? = nil) -> Zone {
+    var z = Zone(id: 1, page: 0, number: 1, source: source)
+    if let box { z.box = box } else {
+        z.lines = (0..<lines).map { WritingLine(x0: 50, x1: 50 + width, y: 700 - CGFloat($0) * 18) }
+    }
+    z.contextBefore = before; z.contextAfter = after
+    return z
+}
+func rule(_ z: Zone) -> KindDecision { ZoneKindRules.propose(z) }
+
+do {
+    var d = rule(ruleZone(before: "La tension se mesure en", after: "(V) dans le circuit.", width: 100))
+    check(d.kind == .mot && d.isSure, "règle : trou isolé dans une phrase = mot sûr", "\(d)")
+    d = rule(ruleZone(before: "Définis la notion de courant électrique."))
+    check(d.kind == .definition && d.isSure, "règle : « définis » + ligne large = définition sûre", "\(d)")
+    d = rule(ruleZone(before: "Qu’est-ce qu’un onduleur ?"))
+    check(d.kind == .definition && d.isSure, "règle : « qu'est-ce que » = définition sûre", "\(d)")
+    d = rule(ruleZone(before: "Explique pourquoi le disjoncteur saute."))
+    check(d.kind == .question && d.isSure, "règle : « explique pourquoi » + ligne large = question sûre", "\(d)")
+    d = rule(ruleZone(before: "Pourquoi utilise-t-on un différentiel ?", width: 200))
+    check(d.kind == .question && d.isSure, "règle : phrase finie par « ? » + ligne moyenne = question", "\(d)")
+    d = rule(ruleZone(before: "Cite deux appareils protégés par un fusible.", width: 100))
+    check(!d.isSure, "règle : consigne ouverte mais trou étroit = ambigu (l'IA décide)", "\(d)")
+    d = rule(ruleZone(before: "Calcule la puissance : P =", width: 100))
+    check(d.kind == .mot && d.isSure, "règle : « calcule » + trou étroit = mot (le résultat)", "\(d)")
+    d = rule(ruleZone(before: "Remarques de l'élève", lines: 3))
+    check(d.kind == .question && d.isSure, "règle : 3 lignes sans consigne de définition = question", "\(d)")
+    d = rule(ruleZone(before: "Définis le courant alternatif.", lines: 4))
+    check(d.kind == .definition && !d.isSure, "règle : « définis » mais 4 lignes = ambigu, indication définition", "\(d)")
+    d = rule(ruleZone(before: "Notion :", width: 200))
+    check(!d.isSure, "règle : ligne moyenne sans consigne = ambigu", "\(d)")
+    d = rule(ruleZone(source: .cadre, box: CGRect(x: 0, y: 0, width: 90, height: 24)))
+    check(d.kind == .mot && d.isSure, "règle : petite case de tableau = mot", "\(d)")
+    d = rule(ruleZone(source: .cadre, box: CGRect(x: 0, y: 0, width: 12, height: 12)))
+    check(d.kind == .mot && d.isSure, "règle : case à cocher = mot", "\(d)")
+    d = rule(ruleZone(source: .cadre, box: CGRect(x: 0, y: 0, width: 300, height: 120), ))
+    check(d.kind == .question && d.isSure, "règle : grand cadre = question", "\(d)")
+    // stabilité : deux passages identiques
+    let samples = [ruleZone(before: "Définis x."), ruleZone(before: "Cite deux exemples.", width: 90), ruleZone(before: "a", lines: 2),
+                   ruleZone(before: "Le courant se mesure en", after: "(A).", width: 80)]
+    check(samples.map { rule($0) } == samples.map { rule($0) }, "règles : deux passages identiques donnent les mêmes types")
+    check(ZoneKindRules.retained(for: ruleZone(before: "Définis x."), userDecided: false) == (.definition, true), "type retenu : règle sûre = verrouillé")
+    var picked = ruleZone(before: "Définis x."); picked.kind = .mot
+    check(ZoneKindRules.retained(for: picked, userDecided: true) == (.mot, true), "type retenu : le choix de l'élève l'emporte sur la règle")
+}
+
+/// Moteur de test : ignore les indications de type et répond ce qu'on lui dicte, comme une IA qui varie d'un passage à l'autre.
+class ScriptEngine: CompletionEngine {
+    let displayName = "Moteur scripté"
+    var usesImages = false
+    var maxConcurrentPages = 1
+    /// Type répondu pour chaque zone (par défaut : question pour tout le monde).
+    var answerKind: (Zone) -> ZoneKind = { _ in .question }
+    /// Zones (par numéro) que le contrôle déclare « pas un trou ».
+    var notHoles: Set<Int> = []
+    var failCheck = false
+    private let lock = NSLock()
+    private(set) var requests: [PageRequest] = []
+    private(set) var checkRequests: [PageRequest] = []
+    private(set) var humanizedKinds: [ZoneKind] = []
+
+    func complete(_ r: PageRequest) async throws -> [ZoneAnswer] {
+        lock.withLock { if r.holeCheckOnly { checkRequests.append(r) } else { requests.append(r) } }
+        if r.holeCheckOnly && failCheck { throw EngineError.network("coupure pendant le contrôle") }
+        return r.zones.map { z in
+            if r.holeCheckOnly { return ZoneAnswer(number: z.number, kind: notHoles.contains(z.number) ? .ignorer : z.kind, text: "") }
+            return ZoneAnswer(number: z.number, kind: answerKind(z), text: "Un onduleur transforme le courant de 230 V.")
+        }
+    }
+    func humanize(_ items: [HumanizeItem]) async throws -> [Int: String] {
+        lock.withLock { humanizedKinds.append(contentsOf: items.map { $0.kind }) }
+        return Dictionary(uniqueKeysWithValues: items.map { ($0.id, "On a un onduleur qui transforme le courant de 230 V.") })
+    }
+}
+/// Variante qui répond elle-même à « vrai trou / pas un trou » (protocole facultatif).
+final class JudgeEngine: ScriptEngine, HoleJudging {
+    private(set) var judged: [(page: Int, numbers: [Int])] = []
+    func judgeHoles(_ request: PageRequest) async throws -> [Int: Bool] {
+        judged.append((request.pageNumber, request.zones.map { $0.number }))
+        if failCheck { throw EngineError.network("coupure pendant le contrôle") }
+        var out: [Int: Bool] = [:]
+        for z in request.zones { out[z.number] = !notHoles.contains(z.number) }
+        return out
+    }
+}
+
+/// 3 zones par page sur 2 pages : n° 1 définition sûre, n° 2 question sûre, n° 3 mot sûr.
+func typedZones(pages: Int = 2) -> ([PageAnalysis], [Zone]) {
+    var zones: [Zone] = []; var analyses: [PageAnalysis] = []; var id = 1
+    for p in 0..<pages {
+        var pz: [Zone] = []
+        for n in 1...3 {
+            var z = fixtureZone(id: id, page: p, number: n, y: 700 - CGFloat(n) * 30)
+            z.kind = .question      // état de départ quelconque : c'est la règle qui décide
+            pz.append(z); id += 1
+        }
+        zones += pz
+        analyses.append(PageAnalysis(pageIndex: p, zones: pz, transcript: "", hasTextLayer: true, rotationUnsupported: false, fontSize: 10))
+    }
+    return (analyses, zones)
+}
+func runTyped(_ engine: CompletionEngine, settings: CompletionSettings, zones inZones: [Zone]? = nil, only: Set<Int>? = nil,
+              log: UpdateLog? = nil) async throws -> [Zone] {
+    let (an, zs) = typedZones()
+    return try await CoursPipeline.complete(url: pdfURL, documentName: "Fiche TP 01 onduleur", analyses: an, zones: inZones ?? zs,
+                                            engine: engine, settings: settings, onlyZoneIDs: only) { u, f, l in log?.record(u, f, l) }
+}
+
+// 9. types stables : une IA qui change d'avis à chaque passage ne change pas les types sûrs
+do {
+    let flip1 = ScriptEngine(); flip1.answerKind = { _ in .question }
+    let flip2 = ScriptEngine(); flip2.answerKind = { z in z.number == 1 ? .definition : .mot }
+    let settings = CompletionSettings(humanize: true, student: StudentProfile())
+    let a = try await runTyped(flip1, settings: settings)
+    let b = try await runTyped(flip2, settings: settings)
+    check(a.map { $0.kind } == b.map { $0.kind }, "types stables : deux passages, deux IA différentes, mêmes types", "\(a.map { $0.kind }) / \(b.map { $0.kind })")
+    check(a.map { $0.kind } == [.definition, .question, .mot, .definition, .question, .mot], "types stables : les règles sûres décident", "\(a.map { $0.kind })")
+    check(a.filter { $0.kind != .question }.allSatisfy { !$0.humanized } && a.filter { $0.kind == .question }.allSatisfy { $0.humanized }, "définitions et mots jamais humanisés, même si l'IA répond « question »")
+    check(flip1.humanizedKinds.allSatisfy { $0 == .question } && flip1.humanizedKinds.count == 2, "seules les 2 questions ouvertes partent à l'humanisation", "\(flip1.humanizedKinds)")
+    let req = flip1.requests[0]
+    check(req.fixedKinds == [1: .definition, 2: .question, 3: .mot], "l'IA reçoit les types retenus (certains)", "\(req.fixedKinds)")
+    let text = Prompts.completionUserText(req)
+    check(text.contains("type retenu : definition") && text.contains("type probable : definition"), "le message indique « type retenu »")
+}
+
+// 9b. choix de l'élève : jamais changé
+do {
+    let (_, zs) = typedZones()
+    var mine = zs
+    // l'élève a mis la question (n° 2, id 2) en « mot » et ignoré le mot (n° 3, id 3)
+    mine[1].kind = .mot
+    mine[2].kind = .ignorer; mine[2].enabled = false
+    let e = ScriptEngine(); e.answerKind = { _ in .question }
+    let out = try await runTyped(e, settings: CompletionSettings(humanize: true, student: StudentProfile(), userKindZoneIDs: [2, 3]), zones: mine)
+    check(out[1].kind == .mot && !out[1].humanized, "choix de l'élève (mot) conservé malgré la règle et l'IA", "\(out[1].kind)")
+    check(out[2].kind == .ignorer && !out[2].enabled && out[2].answer.isEmpty, "zone ignorée par l'élève : jamais remplie")
+    check(!e.requests.flatMap { $0.zones }.contains { $0.id == 3 }, "zone ignorée par l'élève : jamais envoyée à l'IA")
+    // même en régénération ciblée
+    let e2 = ScriptEngine()
+    let again = try await runTyped(e2, settings: CompletionSettings(humanize: false, student: StudentProfile(), userKindZoneIDs: [2, 3]), zones: mine, only: [2, 3])
+    check(again[2].kind == .ignorer && e2.requests.flatMap { $0.zones }.map { $0.id } == [2], "régénération : zone ignorée de l'élève laissée, type du reste gardé")
+    // l'IA dit « ignorer » sur une zone au type choisi : le type reste, un message explique
+    let e3 = ScriptEngine(); e3.answerKind = { _ in .ignorer }
+    let o3 = try await runTyped(e3, settings: CompletionSettings(humanize: false, student: StudentProfile(), userKindZoneIDs: [2]), zones: mine, only: [2])
+    check(o3[1].kind == .mot && o3[1].error != nil, "IA « ignorer » sur un type choisi par l'élève : type gardé + message", "\(o3[1].kind) \(o3[1].error ?? "-")")
+}
+
+// 9c. cas ambigu : l'IA décide, avec la règle comme indication
+do {
+    var z = fixtureZone(id: 1, page: 0, number: 1, y: 600)
+    z.contextBefore = "Notion :"; z.contextAfter = ""; z.lines = [WritingLine(x0: 50, x1: 250, y: 600)]; z.kind = .question
+    let an = [PageAnalysis(pageIndex: 0, zones: [z], transcript: "", hasTextLayer: true, rotationUnsupported: false, fontSize: 10)]
+    let d = ZoneKindRules.propose(z)
+    let e = ScriptEngine(); e.answerKind = { _ in .definition }
+    let out = try await CoursPipeline.complete(url: pdfURL, documentName: "x", analyses: an, zones: [z], engine: e,
+                                               settings: CompletionSettings(humanize: true, student: StudentProfile())) { _, _, _ in }
+    check(!d.isSure && out[0].kind == .definition, "cas ambigu : l'IA tranche", "\(d) \(out[0].kind)")
+    check(e.requests[0].fixedKinds.isEmpty && e.requests[0].zones[0].kind == d.kind, "cas ambigu : la règle est transmise comme indication, pas comme décision")
+    check(Prompts.completionUserText(e.requests[0]).contains("type probable : \(d.kind.rawValue)"), "cas ambigu : « type probable » dans le message")
+    check(!out[0].humanized, "cas ambigu tranché « définition » : pas humanisé")
+    // seconde exécution : la précédente décision de l'IA sert d'indication (stabilité)
+    let e2 = ScriptEngine(); e2.answerKind = { $0.kind }
+    let out2 = try await CoursPipeline.complete(url: pdfURL, documentName: "x", analyses: an, zones: out, engine: e2,
+                                                settings: CompletionSettings(humanize: true, student: StudentProfile())) { _, _, _ in }
+    check(out2[0].kind == .definition, "cas ambigu : repasser garde la décision précédente quand l'IA suit l'indication")
+}
+
+// 10. contrôle facultatif des zones douteuses
+func doubtfulSet() -> ([PageAnalysis], [Zone]) {
+    var (an, zs) = typedZones()
+    // page 1 : zones n° 1 et 2 douteuses ; page 2 : toutes sûres
+    zs[0].confidence = 0.3; zs[0].signals = ["trait en pied de page"]
+    zs[1].confidence = 0.5
+    an[0].zones = Array(zs[0..<3])
+    return (an, zs)
+}
+do {
+    let cache = HoleCheckCache()
+    let (an, zs) = doubtfulSet()
+    // désactivé par défaut : aucun appel de contrôle
+    let off = JudgeEngine()
+    _ = try await CoursPipeline.complete(url: pdfURL, documentName: "Fiche TP 01 onduleur", analyses: an, zones: zs, engine: off,
+                                         settings: CompletionSettings(humanize: false, student: StudentProfile(), holeCache: cache)) { _, _, _ in }
+    check(off.judged.isEmpty && off.checkRequests.isEmpty, "contrôle des douteuses : désactivé par défaut = aucun appel")
+    check(CompletionSettings(humanize: false, student: StudentProfile()).verifyDoubtfulHoles == false, "réglage désactivé par défaut")
+
+    // activé : seule la page 1 est contrôlée, seulement pour ses 2 zones douteuses
+    let judge = JudgeEngine(); judge.notHoles = [1]
+    let log = UpdateLog()
+    let out = try await CoursPipeline.complete(url: pdfURL, documentName: "Fiche TP 01 onduleur", analyses: an, zones: zs, engine: judge,
+                                               settings: CompletionSettings(humanize: false, student: StudentProfile(), verifyDoubtfulHoles: true, holeCache: cache)) { log.record($0, $1, $2) }
+    check(judge.judged.count == 1 && judge.judged[0].page == 1 && judge.judged[0].numbers == [1, 2], "contrôle : une requête, page 1, zones douteuses seulement", "\(judge.judged)")
+    check(out[0].kind == .ignorer && !out[0].enabled && out[0].answer.isEmpty && out[0].signals.contains { $0.contains("pas un trou") }, "contrôle : « pas un trou » = zone ignorée, avec la raison")
+    check(!judge.requests.flatMap { $0.zones }.contains { $0.id == 1 }, "contrôle : la zone écartée n'est pas complétée")
+    check(out[1].confidence >= 0.9 && !ZoneTrust.isDoubtful(out[1]) && !out[1].answer.isEmpty, "contrôle : « vrai trou » = confiance relevée, zone complétée")
+    check(out[2].confidence == 1 && out[3].confidence == 1, "contrôle : zones sûres intactes")
+    check(log.last.first?.kind == .ignorer, "contrôle : résultat visible dans les mises à jour")
+
+    // cache : même signature, pas de nouvelle requête
+    let judge2 = JudgeEngine(); judge2.notHoles = [1]
+    let out2 = try await CoursPipeline.complete(url: pdfURL, documentName: "Fiche TP 02 onduleur", analyses: an, zones: zs, engine: judge2,
+                                                settings: CompletionSettings(humanize: false, student: StudentProfile(), verifyDoubtfulHoles: true, holeCache: cache)) { _, _, _ in }
+    check(judge2.judged.isEmpty && out2[0].kind == .ignorer, "contrôle : verdict en cache (même signature), aucune requête", "\(judge2.judged)")
+    check(cache.count == 2, "cache : 2 signatures", "\(cache.count)")
+
+    // chemin par défaut (moteur sans HoleJudging) : passe par le moteur existant, « ignorer » = pas un trou
+    let plain = ScriptEngine(); plain.notHoles = [1]
+    let out3 = try await CoursPipeline.complete(url: pdfURL, documentName: "Fiche TP 01 onduleur", analyses: an, zones: zs, engine: plain,
+                                                settings: CompletionSettings(humanize: false, student: StudentProfile(), verifyDoubtfulHoles: true, holeCache: HoleCheckCache())) { _, _, _ in }
+    check(plain.checkRequests.count == 1 && plain.checkRequests[0].zones.map { $0.number } == [1, 2], "contrôle par défaut : une requête « holeCheckOnly » pour les douteuses")
+    check(Prompts.completionUserText(plain.checkRequests[0]).contains("contrôle des trous"), "contrôle par défaut : le message demande un contrôle")
+    check(out3[0].kind == .ignorer && out3[1].enabled, "contrôle par défaut : « ignorer » = pas un trou")
+
+    // panne du contrôle : la complétion continue, zones douteuses gardées
+    let broken = JudgeEngine(); broken.failCheck = true
+    let out4 = try await CoursPipeline.complete(url: pdfURL, documentName: "Fiche TP 01 onduleur", analyses: an, zones: zs, engine: broken,
+                                                settings: CompletionSettings(humanize: false, student: StudentProfile(), verifyDoubtfulHoles: true, holeCache: HoleCheckCache())) { _, _, _ in }
+    check(out4.allSatisfy { $0.enabled && !$0.answer.isEmpty }, "panne du contrôle : toutes les zones sont complétées quand même")
+
+    // zones de l'élève (type choisi) et zones manuelles : jamais contrôlées
+    let judge5 = JudgeEngine()
+    var mine = zs; mine[0].source = .manuel
+    _ = try await CoursPipeline.complete(url: pdfURL, documentName: "Fiche TP 01 onduleur", analyses: an, zones: mine, engine: judge5,
+                                         settings: CompletionSettings(humanize: false, student: StudentProfile(), userKindZoneIDs: [2], verifyDoubtfulHoles: true, holeCache: HoleCheckCache())) { _, _, _ in }
+    check(judge5.judged.isEmpty, "contrôle : zone manuelle ou choisie par l'élève jamais contrôlée", "\(judge5.judged)")
+}
+
+
+
+// 11. confiance visible : seuil 0,7, tri « douteuses d'abord », infobulle
+do {
+    var a = fixtureZone(id: 1, page: 0, number: 1, y: 100); a.confidence = 0.69; a.signals = ["trait en pied de page", "aucun texte voisin"]
+    var b = fixtureZone(id: 2, page: 0, number: 2, y: 90)      // confiance 1 par défaut : sûre
+    var c = fixtureZone(id: 3, page: 0, number: 3, y: 80); c.confidence = 0.7
+    var d = fixtureZone(id: 4, page: 0, number: 4, y: 70); d.confidence = 0.1
+    check(ZoneTrust.isDoubtful(a) && !ZoneTrust.isDoubtful(b) && !ZoneTrust.isDoubtful(c) && ZoneTrust.isDoubtful(d), "seuil de confiance 0,7 (0,7 = sûre)")
+    check(ZoneTrust.doubtfulFirst([b, a, c, d]).map { $0.id } == [1, 4, 2, 3], "douteuses d'abord, ordre gardé dans chaque groupe")
+    d.kind = .ignorer
+    check(ZoneTrust.doubtfulCount([a, b, c, d]) == 1, "les zones déjà ignorées ne comptent pas comme douteuses")
+    check(ZoneTrust.tooltip(a).contains("À vérifier") && ZoneTrust.tooltip(a).contains("trait en pied de page") && ZoneTrust.tooltip(a).contains("aucun texte voisin"), "infobulle : les signaux du détecteur", ZoneTrust.tooltip(a))
+    check(ZoneTrust.tooltip(b).contains("sûr"), "infobulle d'une zone sûre")
+}
 
 print(failures == 0 ? "\nTOUT PASSE" : "\n\(failures) ÉCHEC(S)")
 exit(failures == 0 ? 0 : 1)

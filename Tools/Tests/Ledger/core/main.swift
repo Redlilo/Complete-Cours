@@ -249,5 +249,48 @@ do {
     check(CourseAnalysis.digest(file, ledger: nil).fromCache == false, "sans journal : toujours relu")
 }
 
+// 8. trois états : anciens journaux, nouveaux champs, original vide
+section("États de complétion dans le journal")
+do {
+    let files = fresh(), dir = fresh()
+    let f = files.appendingPathComponent("Maths/a.pdf"), g = files.appendingPathComponent("Maths/b.pdf")
+    write(f, "pdf-a"); write(g, "pdf-b")
+    func stamp(_ u: URL) -> (Int, Double) {
+        let a = try! fm.attributesOfItem(atPath: u.path)
+        return ((a[.size] as! NSNumber).intValue, (a[.modificationDate] as! Date).timeIntervalSince1970)
+    }
+    // un ancien journal : aucune des clés « state », « usedBlank », « blank »
+    func oldEntry(_ u: URL, zones: Int, remaining: Int, inc: Bool) -> String {
+        let (sz, mt) = stamp(u)
+        return "\"\(u.standardizedFileURL.path)\":{\"size\":\(sz),\"mtime\":\(mt),\"version\":1,\"isEvaluation\":false,\"excerpt\":\"x\",\"zones\":\(zones),\"remaining\":\(remaining),\"isIncomplete\":\(inc)}"
+    }
+    write(dir.appendingPathComponent("journal.json"),
+          "{\"version\":1,\"moves\":[],\"completions\":[],\"ai\":[],\"digests\":{\(oldEntry(f, zones: 12, remaining: 12, inc: true)),\(oldEntry(g, zones: 12, remaining: 5, inc: true))}}")
+    let l = CourseLedger(directory: dir)
+    check(!l.wasCorrupt && l.digestCount == 2, "ancien journal relu sans erreur")
+    let a = l.cachedDigest(for: f, relativePath: "Maths/a.pdf"), b = l.cachedDigest(for: g, relativePath: "Maths/b.pdf")
+    check(a?.state == .vide && b?.state == .partiel, "état déduit des anciens champs (12/12 → vide, 5/12 → partiel) : \(String(describing: a?.state)) \(String(describing: b?.state))")
+    check(a?.usedBlank == false && a?.blankPath == nil, "ancien résumé : pas d'original vide")
+    // réécriture : les nouveaux champs sont gardés et relus
+    var d = CourseDigest(path: "Maths/a.pdf", isEvaluation: false, excerpt: "x", zones: 12, remaining: 3, isIncomplete: true, state: .partiel, usedBlank: false)
+    l.replaceDigests([(f, d)])
+    check(CourseLedger(directory: dir).cachedDigest(for: f, relativePath: "Maths/a.pdf")?.state == .partiel, "état relu après redémarrage")
+    check(CourseLedger(directory: dir).cachedStates(for: [LibraryTree.makeFile(root: files, url: f)!])[f]?.remaining == 3, "cachedStates")
+    // original vide : le résumé n'est valable qu'avec le même original, non modifié
+    let blank = files.appendingPathComponent("_Originaux avant completion/Maths/a.pdf"); write(blank, "blank-v1")
+    d.usedBlank = true; d.state = .complet; d.remaining = 0; d.isIncomplete = false; d.blankPath = blank.standardizedFileURL.path
+    l.replaceDigests([(f, d)])
+    check(l.cachedDigest(for: f, relativePath: "Maths/a.pdf", blank: blank)?.state == .complet, "même original vide : cache valable")
+    check(l.cachedDigest(for: f, relativePath: "Maths/a.pdf") == nil, "original vide devenu inconnu : relu")
+    check(l.cachedDigest(for: f, relativePath: "Maths/a.pdf", blank: files.appendingPathComponent("autre.pdf")) == nil, "autre original vide : relu")
+    check(l.cachedState(for: f, relativePath: "Maths/a.pdf")?.usedBlank == true, "cachedState ignore l'original vide courant")
+    try! fm.setAttributes([.modificationDate: Date(timeIntervalSinceNow: -5000)], ofItemAtPath: blank.path)
+    check(l.cachedDigest(for: f, relativePath: "Maths/a.pdf", blank: blank) == nil, "original vide modifié : relu")
+    // état explicite : rien n'est « corrigé » par la dérivation
+    check(CourseDigest(path: "p", isEvaluation: false, excerpt: "").state == .complet, "digest sans trou : complet")
+    check(CourseDigest(path: "p", isEvaluation: false, excerpt: "", zones: 4, remaining: 4, isIncomplete: true).state == .vide, "4/4 restants : vide")
+    check(CourseDigest(path: "p", isEvaluation: false, excerpt: "", zones: 4, remaining: 1, isIncomplete: false).state == .complet, "1 trou isolé non incomplet : complet")
+}
+
 print("\nRésultat : \(passed) réussis, \(failed) échec(s)")
 exit(failed == 0 ? 0 : 1)

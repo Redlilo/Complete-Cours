@@ -26,6 +26,13 @@ enum SubjectStyle {
 }
 
 /// Petite étiquette arrondie (« Évaluation », « Déjà rempli »…).
+extension CourseDigest {
+    /// Couleur de l'étiquette d'état : à compléter (orange), partiel (jaune), complet (vert).
+    var badgeColor: Color {
+        switch state { case .vide: return .orange; case .partiel: return .yellow; case .complet: return .green }
+    }
+}
+
 struct Tag: View {
     let text: String
     let color: Color

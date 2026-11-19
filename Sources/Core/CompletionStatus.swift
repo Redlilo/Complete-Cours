@@ -7,20 +7,49 @@ import CoreGraphics
 // s'il y a une annotation de texte (anciennes réponses de l'app) ou de l'encre juste au-dessus de la ligne.
 // Tout est local : aucune IA, aucun réseau.
 
+/// État d'un cours : rien de fait, en cours, terminé.
+enum CompletionState: String, Equatable {
+    case vide, partiel, complet
+}
+
 struct CompletionReport: Equatable {
     var zones: Int          // zones détectées
     var answered: Int       // dont déjà répondues
     var pages: Int
+    /// Le rapport vient de la comparaison avec l'original vide (fiable) et non d'une simple estimation.
+    var usedBlank = false
+    /// Amas d'encre ajoutée hors de toute zone (seulement avec l'original vide) : trous probablement manqués.
+    var unexpectedInk = 0
 
     var remaining: Int { max(0, zones - answered) }
     /// Cours à compléter : il reste des trous, et ce n'est pas juste une zone isolée mal repérée.
     var isIncomplete: Bool { remaining >= 2 && Double(remaining) >= 0.34 * Double(max(zones, 1)) }
+
+    /// Part des zones à partir de laquelle un cours est « vide » : pas plus de 10 % de zones remplies.
+    static let emptyShare = 0.10
+
+    /// État à trois valeurs (règles simples) :
+    /// - complet : plus aucun trou. Avec l'original vide la comparaison est fiable, donc on exige 0 restant ;
+    ///   sans lui, un trou isolé peut être un faux trou : on garde la tolérance de `isIncomplete` ;
+    /// - vide : presque rien n'est rempli (au plus 10 % des zones) ;
+    /// - partiel : tout le reste.
+    /// Un cours sans aucune zone détectée est « complet » (rien à compléter).
+    var state: CompletionState {
+        if zones == 0 { return .complet }
+        if usedBlank ? remaining == 0 : !isIncomplete { return .complet }
+        if Double(answered) <= CompletionReport.emptyShare * Double(zones) { return .vide }
+        return .partiel
+    }
 }
 
 enum CompletionStatus {
-    /// Rapport pour un PDF déjà analysé (`CoursPipeline.analyzeChecked`).
-    static func report(url: URL, analyses: [PageAnalysis]) -> CompletionReport {
+    /// Rapport pour un PDF déjà analysé (`CoursPipeline.analyzeChecked`). Sans `blankOriginal`, `analyses` est celle
+    /// de `url` ; avec lui, c'est celle de l'original vide (les zones y sont intactes) et `url` est la version complétée.
+    static func report(url: URL, analyses: [PageAnalysis], blankOriginal: URL? = nil) -> CompletionReport {
         guard let doc = PDFDocument(url: url) else { return CompletionReport(zones: 0, answered: 0, pages: 0) }
+        if let blankURL = blankOriginal, let blankDoc = PDFDocument(url: blankURL) {
+            return blankReport(completed: doc, blank: blankDoc, analyses: analyses)
+        }
         var zones = 0, answered = 0
         for a in analyses where !a.zones.isEmpty {
             guard let page = doc.page(at: a.pageIndex) else { continue }
@@ -34,10 +63,37 @@ enum CompletionStatus {
         return CompletionReport(zones: zones, answered: answered, pages: doc.pageCount)
     }
 
-    /// Analyse puis rapport (hors thread principal : l'analyse lit toutes les pages).
-    static func report(url: URL) -> CompletionReport? {
+    /// Analyse puis rapport (hors thread principal : l'analyse lit toutes les pages). Avec `blankOriginal`, les zones
+    /// sont cherchées dans l'original vide et comparées à `url` (PageDiff) ; si l'original n'est pas lisible, on
+    /// retombe sur l'estimation à partir de `url` seul.
+    static func report(url: URL, blankOriginal: URL? = nil) -> CompletionReport? {
+        if let blank = blankOriginal, PDFDocument(url: blank) != nil,
+           let analyses = try? CoursPipeline.analyzeChecked(url: blank, needText: false, progress: { _, _ in }) {
+            return report(url: url, analyses: analyses, blankOriginal: blank)
+        }
         guard let analyses = try? CoursPipeline.analyzeChecked(url: url, needText: false, progress: { _, _ in }) else { return nil }
         return report(url: url, analyses: analyses)
+    }
+
+    /// Comparaison avec l'original vide : une zone est répondue si de l'encre y a été ajoutée. Les pages que l'on ne
+    /// peut pas comparer (format différent, page absente) retombent sur l'estimation par annotations et encre.
+    private static func blankReport(completed: PDFDocument, blank: PDFDocument, analyses: [PageAnalysis]) -> CompletionReport {
+        let all = analyses.flatMap { $0.zones }
+        let diff = PageDiff.compare(blank: blank, completed: completed, zones: all)
+        var zones = 0, answered = 0
+        for a in analyses where !a.zones.isEmpty {
+            guard let blankPage = blank.page(at: a.pageIndex) else { continue }
+            let donePage = completed.page(at: a.pageIndex)
+            let notes = donePage.map(textAnnotationRects) ?? []
+            let ink = donePage.flatMap(inkProbe)
+            for z in a.zones where isMeaningful(z, page: blankPage) {
+                zones += 1
+                if let d = diff.zones[z.id], d.comparable { if d.filled { answered += 1 } }
+                else if donePage != nil, isAnswered(z, notes: notes, ink: ink) { answered += 1 }
+            }
+        }
+        return CompletionReport(zones: zones, answered: answered, pages: completed.pageCount,
+                                usedBlank: true, unexpectedInk: diff.blobs.count)
     }
 
     // MARK: Faux trous

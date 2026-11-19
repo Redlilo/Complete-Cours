@@ -27,6 +27,11 @@ struct ZoneRow: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
                     .help(zone.contextBefore)
+                if let note = model.learnedNotes[zone.id] {
+                    Label(note, systemImage: "brain.head.profile")
+                        .font(.caption).foregroundStyle(.teal)
+                        .help("D'après tes corrections précédentes. Change le type de la zone pour faire autrement.")
+                }
                 if isIgnored {
                     Text("Cette zone est ignorée : rien n'y sera écrit.")
                         .font(.caption).foregroundStyle(.tertiary)
@@ -76,6 +81,16 @@ struct ZoneRow: View {
         }
     }
 
+    /// Pastille « sûre / à vérifier » d'après la confiance du détecteur (seuil 0,7), avec les raisons en infobulle.
+    @ViewBuilder private var trustTag: some View {
+        if !isIgnored {
+            let doubtful = ZoneTrust.isDoubtful(zone)
+            Tag(text: doubtful ? "À vérifier" : "Sûre", color: doubtful ? .orange : .green)
+                .help(ZoneTrust.tooltip(zone))
+                .accessibilityLabel(doubtful ? "Trou à vérifier" : "Trou sûr")
+        }
+    }
+
     // MARK: Parties
 
     private var badge: some View {
@@ -98,6 +113,7 @@ struct ZoneRow: View {
             .tint(kindColor)
             .disabled(model.isRunning)
             stateTag
+            trustTag
             Spacer(minLength: 4)
             if isThisRunning {
                 ProgressView().controlSize(.small)
@@ -185,6 +201,13 @@ struct ZoneRow: View {
                 .disabled(model.isBusy)
                 .help(hasAnswer ? "Demander une autre réponse pour cette zone" : "Écrire une réponse pour cette zone seulement")
             }
+            Button {
+                model.ignoreSimilarZones(like: zone.id)
+            } label: {
+                Label("Ignorer les zones comme celle-ci", systemImage: "eye.slash")
+            }
+            .disabled(model.isBusy)
+            .help("Ignore toutes les zones du même genre dans ce document, et s'en souvient pour les prochains cours du même modèle")
             Spacer(minLength: 0)
             if isManual {
                 Button(role: .destructive) { model.deleteManualZone(zone.id) } label: {

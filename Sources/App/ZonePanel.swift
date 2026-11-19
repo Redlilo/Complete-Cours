@@ -9,6 +9,8 @@ struct ZonePanel: View {
     @AppStorage(Pref.engine) private var engineRaw = Pref.defaultEngine.rawValue
     @AppStorage(Pref.humanize) private var humanize = Pref.defaultHumanize
     @AppStorage(Pref.humanizeTone) private var toneRaw = HumanizeTone.eleve.rawValue
+    @AppStorage(Pref.verifyDoubtfulHoles) private var verifyDoubtful = false
+    @State private var doubtfulFirst = false
 
     private var engineKind: EngineKind { EngineKind(rawValue: engineRaw) ?? Pref.defaultEngine }
 
@@ -62,6 +64,7 @@ struct ZonePanel: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
             humanizeCard
+            if model.isReady { reliabilityCard }
         }
         .padding(.horizontal, 14).padding(.vertical, 12)
         .background(LinearGradient(colors: [Color.accentColor.opacity(0.08), .clear], startPoint: .topLeading, endPoint: .bottomTrailing))
@@ -90,6 +93,49 @@ struct ZonePanel: View {
             }
         }
         .card(padding: 10)
+    }
+
+    /// Fiabilité des zones : douteuses d'abord, ignorer les douteuses, contrôle facultatif par l'IA, mémoire des corrections.
+    @ViewBuilder private var reliabilityCard: some View {
+        let doubtful = model.doubtfulCount
+        if doubtful > 0 || model.learnedCount > 0 || verifyDoubtful {
+            VStack(alignment: .leading, spacing: 8) {
+                if doubtful > 0 {
+                    Label("\(Fr.zones(doubtful)) à vérifier", systemImage: "questionmark.circle")
+                        .font(.subheadline.weight(.semibold)).foregroundStyle(.orange)
+                    Text("Le détecteur n'est pas sûr que ce soient de vrais trous (trait de pied de page, soulignement de titre…).")
+                        .font(.caption).foregroundStyle(.secondary)
+                    HStack {
+                        Toggle("Douteuses d'abord", isOn: $doubtfulFirst).toggleStyle(.checkbox).font(.caption)
+                        Spacer(minLength: 4)
+                        Button("Ignorer les douteuses") { model.ignoreDoubtfulZones() }
+                            .controlSize(.small)
+                            .disabled(model.isBusy)
+                            .help("Ignore toutes les zones à vérifier ; tu peux en remettre une en changeant son type")
+                    }
+                }
+                Toggle(isOn: $verifyDoubtful) {
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("Faire contrôler les zones douteuses par l'IA").font(.caption.weight(.medium))
+                        Text("Facultatif : une requête de plus, seulement pour les pages qui ont des zones à vérifier.")
+                            .font(.caption2).foregroundStyle(.secondary)
+                    }
+                }
+                .toggleStyle(.checkbox)
+                .disabled(model.isRunning)
+                if model.learnedCount > 0 {
+                    HStack {
+                        Text("\(model.learnedCount) correction\(model.learnedCount > 1 ? "s" : "") retenue\(model.learnedCount > 1 ? "s" : "")")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Spacer(minLength: 4)
+                        Button("Oublier mes corrections") { model.forgetLearning() }
+                            .controlSize(.small)
+                            .disabled(model.isBusy)
+                    }
+                }
+            }
+            .card(padding: 10)
+        }
     }
 
     // MARK: Messages (moteur, progression, erreurs)
@@ -131,6 +177,11 @@ struct ZonePanel: View {
 
     private var pages: [Int] { Array(Set(model.zones.map { $0.page })).sorted() }
 
+    private func pageZones(_ page: Int) -> [Zone] {
+        let list = model.zones.filter { $0.page == page }
+        return doubtfulFirst ? ZoneTrust.doubtfulFirst(list) : list
+    }
+
     @ViewBuilder private var zoneList: some View {
         if model.isAnalyzing {
             HStack(spacing: 8) {
@@ -147,7 +198,7 @@ struct ZonePanel: View {
                     .foregroundStyle(.secondary)
                     .padding(.top, 8).padding(.leading, 2)
                     .accessibilityAddTraits(.isHeader)
-                ForEach(model.zones.filter { $0.page == page }) { zone in
+                ForEach(pageZones(page)) { zone in
                     ZoneRow(zone: zone).id(zone.id)
                 }
             }

@@ -66,6 +66,33 @@ enum OriginalsArchive {
         return out.sorted { $0.original.path.localizedStandardCompare($1.original.path) == .orderedAscending }
     }
 
+    /// L'original vide d'une version complétée, s'il est connu : d'abord une complétion du journal (l'original a pu être
+    /// rangé depuis : le journal suit son déplacement), sinon un PDF de même nom de base à côté, sinon dans le dossier
+    /// des originaux (même sous-dossiers). `files` contient aussi les fichiers du dossier des originaux. Un fichier
+    /// qui n'est pas une version complétée, ou une évaluation, n'a pas d'original (nil).
+    static func blankOriginal(for file: LibraryFile, files: [LibraryFile], root: URL,
+                              completions: [CompletionRecord] = [], moves: [MoveRecord] = []) -> URL? {
+        guard !file.isEvaluation, file.folders.first?.hasPrefix("_") != true else { return nil }
+        let fm = FileManager.default
+        let me = file.url.standardizedFileURL.path
+        for rec in completions where rec.copy == me && rec.original != me {
+            var candidates = [rec.original]
+            // l'original rangé ensuite : suit les déplacements du journal (au cas où le chemin n'a pas été mis à jour)
+            candidates += moves.filter { $0.from == rec.original && $0.origin == .originaux }.map(\.to)
+            if let hit = candidates.first(where: { fm.fileExists(atPath: $0) }) {
+                if let f = files.first(where: { $0.url.standardizedFileURL.path == hit }), f.isEvaluation { return nil }
+                return URL(fileURLWithPath: hit)
+            }
+        }
+        guard let base = completedBase(file.name) else { return nil }
+        func pick(_ folders: [String]) -> URL? {
+            files.filter { $0.folders == folders && $0.url != file.url && !$0.isEvaluation && $0.state == .vierge
+                           && normalized($0.name) == base }
+                 .map(\.url).sorted { $0.path < $1.path }.first
+        }
+        return pick(file.folders) ?? pick([folderName] + file.folders)
+    }
+
     /// Emplacement dans le dossier des originaux (même sous-dossiers), sans jamais viser un fichier qui existe déjà.
     static func destination(for original: URL, root: URL) -> URL? {
         let rootParts = root.standardizedFileURL.pathComponents

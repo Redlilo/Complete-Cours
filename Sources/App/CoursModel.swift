@@ -98,6 +98,12 @@ final class CoursModel: ObservableObject {
     @Published private(set) var notice: Notice?
     @Published private(set) var hasUnsavedChanges = false
 
+    // Mémoire des corrections
+    /// Explication affichée dans la liste pour les zones réglées d'après les corrections passées (« Ignorée comme d'habitude »).
+    @Published private(set) var learnedNotes: [Int: String] = [:]
+    /// Nombre de corrections mémorisées (pour « Oublier mes corrections »).
+    @Published private(set) var learnedCount = 0
+
     // Sélection et dessin d'une zone
     @Published private(set) var selectedZoneID: Int?
     @Published private(set) var revealRequest: RevealRequest?
@@ -112,6 +118,9 @@ final class CoursModel: ObservableObject {
     private let engineFactory: (RunSettings) throws -> CompletionEngine
     private let dialogs: Dialogs
     private let defaults: UserDefaults
+    private let learning: ZoneLearning
+    /// Zones dont le type a été décidé par l'élève (ou par sa mémoire) : le traitement ne le change jamais.
+    private var userKindIDs = Set<Int>()
 
     private var loadTask: Task<Void, Never>?
     private var runTask: Task<Void, Never>?
@@ -129,7 +138,10 @@ final class CoursModel: ObservableObject {
     init(settings: @escaping () -> RunSettings = { RunSettings.current() },
          engineFactory: @escaping (RunSettings) throws -> CompletionEngine = { try EngineFactory.make($0) },
          dialogs: Dialogs? = nil,
-         defaults: UserDefaults = .standard) {
+         defaults: UserDefaults = .standard,
+         learning: ZoneLearning = .shared) {
+        self.learning = learning
+        self.learnedCount = learning.count
         self.settingsProvider = settings
         self.engineFactory = engineFactory
         self.dialogs = dialogs ?? AppKitDialogs()
@@ -267,6 +279,8 @@ final class CoursModel: ObservableObject {
         revealRequest = nil
         isDrawingZone = false
         renderResult = RenderResult()
+        userKindIDs = []
+        learnedNotes = [:]
     }
 
     private func cancelWork() {
@@ -331,10 +345,118 @@ final class CoursModel: ObservableObject {
         zones = results.flatMap { $0.zones }.sorted { ($0.page, $0.number) < ($1.page, $1.number) }
         skippedPages = results.filter { $0.rotationUnsupported }.map { $0.pageIndex }
         analysisUsedText = needText
+        let learned = applyLearning()
         analysis = .done
         if let failure {
             showNotice(.warning, "Les zones n'ont pas pu être cherchées : \(failure) Rouvre le PDF, ou essaie un autre fichier.")
+        } else if learned > 0 {
+            showNotice(.info, "\(Fr.zones(learned)) \(Fr.plural(learned, "réglée", "réglées")) comme d'habitude, d'après tes corrections précédentes. Tu peux les changer : c'est toi qui décides.")
         }
+    }
+
+    // MARK: - Mémoire des corrections
+
+    /// Dossiers du chemin du PDF (pour ne jamais retenir quoi que ce soit d'une évaluation).
+    private var learningPath: [String] { fileURL?.pathComponents.filter { $0 != "/" } ?? [] }
+
+    /// Applique ce que l'élève a déjà corrigé sur des zones équivalentes. Renvoie le nombre de zones réglées.
+    @discardableResult
+    private func applyLearning() -> Int {
+        var updated = zones
+        let applied = learning.apply(to: &updated, documentName: documentName, path: learningPath)
+        learnedCount = learning.count
+        guard !applied.isEmpty else { return 0 }
+        zones = updated
+        for a in applied {
+            learnedNotes[a.zoneID] = a.trace
+            switch a.action {
+            case .ignore, .kind: userKindIDs.insert(a.zoneID)
+            case .confirm: break
+            }
+        }
+        return applied.count
+    }
+
+    /// Retient une correction de l'élève (sans effet pour une évaluation ou une zone sans texte voisin).
+    private func remember(_ zone: Zone, _ action: ZoneLearning.Action) {
+        learning.record(action, for: zone, documentName: documentName, path: learningPath)
+        learnedCount = learning.count
+    }
+
+    /// « Ignorer les zones comme celle-ci » : toutes les zones du document de même signature sont ignorées,
+    /// et la correction est mémorisée pour les prochains cours du même modèle.
+    func ignoreSimilarZones(like id: Int) {
+        guard let base = zone(id), !isBusy else { return }
+        let sig = ZoneSignature(zone: base, documentName: documentName)
+        var ids: [Int] = []
+        var updated = zones
+        for i in updated.indices {
+            let z = updated[i]
+            let same = z.id == id || (z.source != .manuel && ZoneSignature(zone: z, documentName: documentName).matches(sig))
+            guard same, z.kind != .ignorer else { continue }
+            updated[i].kind = .ignorer
+            updated[i].enabled = false
+            updated[i].answer = ""
+            updated[i].rawAnswer = ""
+            updated[i].humanized = false
+            updated[i].error = nil
+            ids.append(z.id)
+        }
+        guard !ids.isEmpty else { return }
+        zones = updated
+        for i in ids { userKindIDs.insert(i); learnedNotes[i] = "Ignorée : même genre de zone que la n° \(base.number)" }
+        let memorized = sig.isLearnable && ZoneLearning.isAllowed(documentName: documentName, path: learningPath)
+        if memorized { remember(base, .ignore) }
+        hasUnsavedChanges = true
+        renderTask?.cancel()
+        renderAnswers()
+        let n = ids.count
+        showNotice(.info, "\(Fr.zones(n)) \(Fr.plural(n, "ignorée", "ignorées"))" + (memorized
+                   ? ", et je m'en souviendrai pour les prochains cours de ce modèle."
+                   : ". Cette correction ne peut pas être mémorisée (pas de texte voisin à reconnaître)."))
+    }
+
+    /// Zones douteuses encore actives.
+    var doubtfulCount: Int { ZoneTrust.doubtfulCount(zones) }
+
+    /// « Ignorer les douteuses » : le détecteur n'est pas sûr de ces zones. Pas mémorisé (c'est un tri, pas une correction ciblée).
+    func ignoreDoubtfulZones() {
+        guard !isBusy else { return }
+        var updated = zones
+        var count = 0
+        for i in updated.indices where ZoneTrust.isDoubtful(updated[i]) && updated[i].kind != .ignorer {
+            updated[i].kind = .ignorer
+            updated[i].enabled = false
+            updated[i].answer = ""
+            updated[i].rawAnswer = ""
+            updated[i].humanized = false
+            updated[i].error = nil
+            userKindIDs.insert(updated[i].id)
+            count += 1
+        }
+        guard count > 0 else { return }
+        zones = updated
+        hasUnsavedChanges = true
+        renderTask?.cancel()
+        renderAnswers()
+        showNotice(.info, "\(Fr.zones(count)) douteuse\(count > 1 ? "s" : "") \(Fr.plural(count, "ignorée", "ignorées")). Change le type d'une zone pour la remettre.")
+    }
+
+    /// « Oublier mes corrections » : efface la mémoire (les zones du cours ouvert ne changent pas).
+    func forgetLearning() {
+        guard learnedCount > 0 else {
+            showNotice(.info, "Je n'ai encore retenu aucune correction.")
+            return
+        }
+        let ok = dialogs.confirm(
+            title: "Oublier tes corrections ?",
+            message: "Les prochains cours ne seront plus réglés d'après tes corrections passées. Le cours ouvert ne change pas.",
+            accept: "Tout oublier", cancel: "Garder", destructive: true)
+        guard ok else { return }
+        learning.forgetAll()
+        learnedCount = 0
+        learnedNotes = [:]
+        showNotice(.success, "J'ai oublié tes corrections.")
     }
 
     private func analysisProgress(_ fraction: Double, _ label: String, generation: Int) {
@@ -412,7 +534,9 @@ final class CoursModel: ObservableObject {
         }
 
         let requested: Set<Int> = ids ?? Set(zones.filter { $0.enabled }.map { $0.id })
-        let completion = CompletionSettings(humanize: settings.humanize, student: settings.student, humanizeTone: settings.humanizeTone)
+        let completion = CompletionSettings(humanize: settings.humanize, student: settings.student, humanizeTone: settings.humanizeTone,
+                                            userKindZoneIDs: userKindIDs,
+                                            verifyDoubtfulHoles: defaults.bool(forKey: Pref.verifyDoubtfulHoles))
         let name = documentName
         var humanizeWarning: String?
 
@@ -497,6 +621,8 @@ final class CoursModel: ObservableObject {
             updated[i].humanized = p.humanized
             updated[i].enabled = p.enabled
             updated[i].error = p.error
+            updated[i].confidence = p.confidence      // le contrôle facultatif des zones douteuses peut les changer
+            updated[i].signals = p.signals
         }
         zones = updated
     }
@@ -575,6 +701,9 @@ final class CoursModel: ObservableObject {
 
     func setKind(_ kind: ZoneKind, for id: Int) {
         guard let current = zone(id), current.kind != kind else { return }
+        userKindIDs.insert(id)           // choix de l'élève : jamais changé par un traitement
+        learnedNotes[id] = nil
+        defer { if let changed = zone(id) { remember(changed, kind == .ignorer ? .ignore : .kind(kind)) } }
         updateZone(id) { z in
             let wasIgnored = z.kind == .ignorer
             z.kind = kind
@@ -662,11 +791,13 @@ final class CoursModel: ObservableObject {
             return ZoneDetector.manualZone(page: p, index: pageIndex, id: id, number: number, rect: rect, useOCR: ocr)
         }.value
         guard generation == documentGeneration else { return }
-        guard let zone = created else {
+        guard var zone = created else {
             showNotice(.warning, "La zone n'a pas pu être ajoutée : le PDF n'a pas pu être relu.")
             return
         }
+        zone.kind = ZoneKindRules.propose(zone).kind
         zones = (zones + [zone]).sorted { ($0.page, $0.number) < ($1.page, $1.number) }
+        remember(zone, .confirm)         // une zone ajoutée à la main est un vrai trou que le détecteur avait raté
         select(zone.id, from: .program)
     }
 

@@ -15,6 +15,11 @@ func check(_ condition: @autoclosure () throws -> Bool, _ message: String, line:
     if try condition() { passed += 1 } else { failed += 1; print("  ECHEC (ligne \(line)) : \(message)") }
 }
 
+/// Variante avec un détail affiché en cas d'échec.
+func check(_ condition: Bool, _ message: String, _ detail: @autoclosure () -> String, line: Int = #line) {
+    if condition { passed += 1 } else { failed += 1; print("  ECHEC (ligne \(line)) : \(message) — \(detail())") }
+}
+
 /// Même chose quand la condition demande d'attendre quelque chose (`await checkA(await ...)`).
 func checkA(_ condition: @autoclosure () async -> Bool, _ message: String, line: Int = #line) async {
     if await condition() { passed += 1 } else { failed += 1; print("  ECHEC (ligne \(line)) : \(message)") }
@@ -73,8 +78,17 @@ final class Knobs {
 
 let suiteName = "fr.complete-cours.tests"
 
+/// Mémoire des corrections jetable : jamais celle de l'élève (Application Support).
+nonisolated(unsafe) var learningDirs: [URL] = []
+func makeLearning() -> ZoneLearning {
+    let d = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("tests-app-learning-\(UUID().uuidString)", isDirectory: true)
+    learningDirs.append(d)
+    return ZoneLearning(directory: d)
+}
+
 @MainActor
-func makeModel(engine: CompletionEngine, knobs knobsOrNil: Knobs? = nil, dialogs dialogsOrNil: ScriptedDialogs? = nil) -> CoursModel {
+func makeModel(engine: CompletionEngine, knobs knobsOrNil: Knobs? = nil, dialogs dialogsOrNil: ScriptedDialogs? = nil,
+               learning: ZoneLearning? = nil) -> CoursModel {
     let knobs = knobsOrNil ?? Knobs()
     let dialogs = dialogsOrNil ?? ScriptedDialogs()
     let defaults = UserDefaults(suiteName: suiteName)!
@@ -84,7 +98,8 @@ func makeModel(engine: CompletionEngine, knobs knobsOrNil: Knobs? = nil, dialogs
                                 styleKey: knobs.style, flatten: knobs.flatten, student: knobs.student) },
         engineFactory: { _ in engine },
         dialogs: dialogs,
-        defaults: defaults)
+        defaults: defaults,
+        learning: learning ?? makeLearning())
 }
 
 @MainActor
@@ -420,7 +435,7 @@ func testRegenerateAndErrors(_ files: TestPDFs.Files) async {
     let defaults = UserDefaults(suiteName: suiteName)!
     let model3 = CoursModel(settings: { RunSettings(engine: knobs.kind, claudeModel: "x", humanize: true, styleKey: "bleu", flatten: true, student: StudentProfile()) },
                             engineFactory: { _ in throw EngineError.unavailable("Aucune clé API Claude n'est enregistrée.") },
-                            dialogs: ScriptedDialogs(), defaults: defaults)
+                            dialogs: ScriptedDialogs(), defaults: defaults, learning: makeLearning())
     _ = await openAndWait(model3, files.texte)
     await model3.complete()
     check(model3.runProblem?.needsSettings == true && !model3.isRunning, "moteur indisponible : message + Réglages")
@@ -577,6 +592,131 @@ func testRescanForText(_ files: TestPDFs.Files) async {
     check(model.zones.contains { $0.source == .manuel && $0.box == manualRect }, "la zone manuelle survit à la relecture")
 }
 
+
+@MainActor
+func testLearning(_ files: TestPDFs.Files, dir: URL) async {
+    section("Mémoire des corrections, types stables, zones douteuses")
+    let mem = makeLearning()
+    let copies = dir.appendingPathComponent("memoire", isDirectory: true)
+    try? FileManager.default.createDirectory(at: copies, withIntermediateDirectories: true)
+    let first = copies.appendingPathComponent("Fiche TP 01 energies.pdf")
+    let second = copies.appendingPathComponent("Fiche TP 02 energies (complétée).pdf")
+    try? FileManager.default.copyItem(at: files.texte, to: first)
+    try? FileManager.default.copyItem(at: files.texte, to: second)
+
+    let modelA = makeModel(engine: FakeEngine(), learning: mem)
+    _ = await openAndWait(modelA, first)
+    let learnable = modelA.zones.filter { ZoneSignature(zone: $0, documentName: modelA.documentName).isLearnable }
+    check(learnable.count >= 3, "zones mémorisables dans le PDF de test", "\(learnable.count)")
+    guard learnable.count >= 3 else { return }
+    check(modelA.learnedCount == 0 && modelA.learnedNotes.isEmpty, "rien de retenu au départ")
+
+    // le type d'une zone est décidé par les règles locales dès l'analyse
+    check(modelA.zones.allSatisfy { $0.kind == ZoneKindRules.propose($0).kind }, "types proposés par les règles locales")
+
+    // corrections : ignorer une zone, changer le type d'une autre
+    let ignored = learnable[0], retyped = learnable[1]
+    let newKind: ZoneKind = ZoneKindRules.propose(retyped).kind == .definition ? .question : .definition
+    modelA.setKind(.ignorer, for: ignored.id)
+    modelA.setKind(newKind, for: retyped.id)
+    check(modelA.learnedCount >= 1, "corrections retenues", "\(modelA.learnedCount)")
+
+    // un autre cours du même modèle (numéro et « complétée » ne comptent pas) : appliqué, avec trace
+    let modelB = makeModel(engine: FakeEngine(), learning: mem)
+    _ = await openAndWait(modelB, second)
+    let ig = modelB.zone(ignored.id)!
+    check(ig.kind == .ignorer && !ig.enabled, "zone ignorée comme d'habitude")
+    check(modelB.learnedNotes[ignored.id] == "Ignorée comme d'habitude", "trace visible", "\(modelB.learnedNotes)")
+    check(modelB.zone(retyped.id)!.kind == newKind, "type préféré appliqué", "\(modelB.zone(retyped.id)!.kind)")
+    check((modelB.notice?.text ?? "").contains("comme d'habitude"), "notice : réglé d'après tes corrections", modelB.notice?.text ?? "-")
+    let untouched = modelB.zones.filter { $0.id != ignored.id && $0.id != retyped.id && modelB.learnedNotes[$0.id] == nil }
+    check(!untouched.isEmpty && untouched.allSatisfy { $0.kind == ZoneKindRules.propose($0).kind }, "les autres zones gardent le type des règles")
+
+    // le type choisi (appris) n'est jamais changé par le traitement, même si l'IA dit autre chose
+    let fake = FakeEngine()
+    let modelC = makeModel(engine: fake, learning: mem)
+    _ = await openAndWait(modelC, second)
+    await modelC.complete()
+    check(modelC.zone(retyped.id)!.kind == newKind, "traitement : le type préféré reste", "\(modelC.zone(retyped.id)!.kind)")
+    check(modelC.zone(ignored.id)!.kind == .ignorer && modelC.zone(ignored.id)!.answer.isEmpty, "traitement : la zone ignorée reste vide")
+    check(!fake.requests.flatMap { $0.zones }.contains { $0.id == ignored.id }, "traitement : la zone ignorée n'est pas envoyée à l'IA")
+    check(fake.requests.flatMap { $0.zones }.first { $0.id == retyped.id }.map { _ in fake.requests.contains { $0.fixedKinds.values.contains(newKind) } } ?? false, "traitement : le type préféré est transmis comme décidé")
+
+    // le choix de l'élève pendant la session est lui aussi gardé
+    let engineD = FakeEngine()
+    let modelD = makeModel(engine: engineD, learning: makeLearning())
+    _ = await openAndWait(modelD, first)
+    let target = modelD.zones.first { ZoneKindRules.propose($0).kind != .mot }!
+    modelD.setKind(.mot, for: target.id)
+    await modelD.complete()
+    check(modelD.zone(target.id)!.kind == .mot && !modelD.zone(target.id)!.humanized, "type choisi par l'élève conservé après « Compléter »")
+    modelD.setKind(.ignorer, for: target.id)
+    let requestsBefore = engineD.requests.count
+    await modelD.complete()
+    check(modelD.zone(target.id)!.kind == .ignorer && !modelD.zone(target.id)!.enabled, "zone ignorée par l'élève : reste ignorée après un second passage")
+    check(!engineD.requests.dropFirst(requestsBefore).flatMap { $0.zones }.contains { $0.id == target.id }, "zone ignorée par l'élève : jamais renvoyée à l'IA")
+
+    // « Ignorer les zones comme celle-ci »
+    let modelE = makeModel(engine: FakeEngine(), learning: mem)
+    _ = await openAndWait(modelE, first)
+    let like = modelE.zones.first { $0.kind != .ignorer && ZoneSignature(zone: $0, documentName: modelE.documentName).isLearnable }!
+    let sig = ZoneSignature(zone: like, documentName: modelE.documentName)
+    let twins = modelE.zones.filter { $0.kind != .ignorer && ZoneSignature(zone: $0, documentName: modelE.documentName).matches(sig) }.map { $0.id }
+    let before = modelE.learnedCount
+    modelE.ignoreSimilarZones(like: like.id)
+    check(twins.allSatisfy { modelE.zone($0)?.kind == .ignorer && modelE.zone($0)?.enabled == false }, "ignorer comme celle-ci : toutes les zones jumelles ignorées", "\(twins)")
+    check(modelE.learnedCount >= before, "ignorer comme celle-ci : mémorisé")
+    let modelF = makeModel(engine: FakeEngine(), learning: mem)
+    _ = await openAndWait(modelF, second)
+    check(modelF.zone(like.id)?.kind == .ignorer, "ignorer comme celle-ci : retrouvé au cours suivant")
+
+    // zones douteuses : le détecteur ne renseigne pas encore de doute sur ce PDF, rien ne bouge
+    let doubtBefore = modelF.zones.map { $0.kind }
+    modelF.ignoreDoubtfulZones()
+    check(modelF.doubtfulCount == modelF.zones.filter { $0.confidence < 0.7 && $0.kind != .ignorer }.count, "compte des douteuses cohérent")
+    check(modelF.zones.filter { $0.confidence >= 0.7 }.map { $0.kind } == zip(modelF.zones, doubtBefore).filter { $0.0.confidence >= 0.7 }.map { $0.1 }, "ignorer les douteuses ne touche pas les zones sûres")
+
+    // zone ajoutée à la main : retenue comme vrai trou
+    let modelG = makeModel(engine: FakeEngine(), learning: makeLearning())
+    _ = await openAndWait(modelG, first)
+    let n0 = modelG.learnedCount
+    await modelG.addManualZone(pageIndex: 0, rect: CGRect(x: 60, y: 560, width: 220, height: 24))
+    let manual = modelG.zones.first { $0.source == .manuel }
+    check(manual != nil, "zone manuelle ajoutée")
+    if let manual {
+        let learnableManual = ZoneSignature(zone: manual, documentName: modelG.documentName).isLearnable
+        check(modelG.learnedCount == n0 + (learnableManual ? 1 : 0), "zone ajoutée à la main : retenue (si elle a un texte voisin)", "\(n0) -> \(modelG.learnedCount)")
+        check(manual.kind == ZoneKindRules.propose(manual).kind, "zone manuelle : type proposé par les règles")
+    }
+
+    // jamais d'évaluation
+    let evalDir = copies.appendingPathComponent("Evaluations", isDirectory: true)
+    try? FileManager.default.createDirectory(at: evalDir, withIntermediateDirectories: true)
+    let evalFile = evalDir.appendingPathComponent("Fiche TP 03 energies.pdf")
+    try? FileManager.default.copyItem(at: files.texte, to: evalFile)
+    let modelH = makeModel(engine: FakeEngine(), learning: mem)
+    _ = await openAndWait(modelH, evalFile)
+    let nEval = mem.count
+    check(modelH.learnedNotes.isEmpty, "évaluation : aucune correction appliquée")
+    modelH.setKind(.ignorer, for: modelH.zones[0].id)
+    check(mem.count == nEval, "évaluation : aucune correction retenue", "\(nEval) -> \(mem.count)")
+
+    // oublier
+    let dialogs = ScriptedDialogs()
+    let modelI = makeModel(engine: FakeEngine(), dialogs: dialogs, learning: mem)
+    _ = await openAndWait(modelI, second)
+    check(modelI.learnedCount > 0 && !modelI.learnedNotes.isEmpty, "avant d'oublier : des corrections s'appliquent")
+    dialogs.confirmAnswers = [false]
+    modelI.forgetLearning()
+    check(modelI.learnedCount > 0 && mem.count > 0, "« Garder » : rien n'est oublié")
+    dialogs.confirmAnswers = [true]
+    modelI.forgetLearning()
+    check(modelI.learnedCount == 0 && mem.count == 0 && modelI.learnedNotes.isEmpty, "« Oublier mes corrections » : mémoire vidée")
+    let modelJ = makeModel(engine: FakeEngine(), learning: mem)
+    _ = await openAndWait(modelJ, second)
+    check(modelJ.learnedNotes.isEmpty && modelJ.zones.allSatisfy { $0.kind == ZoneKindRules.propose($0).kind }, "après oubli : plus rien n'est appliqué")
+}
+
 @MainActor
 func runAll() async {
     let dir = URL(fileURLWithPath: CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : NSTemporaryDirectory())
@@ -596,6 +736,8 @@ func runAll() async {
     await testManualZones(files)
     await testSaving(files, dir: dir)
     await testRescanForText(files)
+    await testLearning(files, dir: dir)
+    for d in learningDirs { try? FileManager.default.removeItem(at: d) }
     UserDefaults(suiteName: suiteName)?.removePersistentDomain(forName: suiteName)
 }
 
