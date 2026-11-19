@@ -102,18 +102,23 @@ final class AnalysisModel: ObservableObject {
     @Published var checkedCount = 0
     @Published var rereadCount = 0
     @Published var unchangedCount = 0
+    /// Récapitulatif du coût pour la sélection « À compléter » (mis à jour quand on coche ou décoche).
+    @Published var cost: CostEstimate?
+    @Published private(set) var preparing = false
+    private var pageCache: [String: Int] = [:]      // chemin relatif -> pages (-1 : illisible)
+    private var costTask: Task<Void, Never>?
     private var task: Task<Void, Never>?
     private let ledger = CourseLedger.shared
     let history = MoveHistory.shared
 
-    var isBusy: Bool { if case .reading = phase { return true }; if case .asking = phase { return true }; return batch != nil }
+    var isBusy: Bool { if preparing { return true }; if case .reading = phase { return true }; if case .asking = phase { return true }; return batch != nil }
 
     /// `force` : relit tous les cours et redemande à l'IA, sans utiliser ce que le journal a gardé.
     func run(force: Bool = false) {
         guard !isBusy else { return }
         let library = LibraryModel.shared
         let root = library.root, files = library.files.filter { $0.folders.first?.hasPrefix("_") != true }
-        suggestions = []; incomplete = []; note = nil; batchReport = nil
+        suggestions = []; incomplete = []; note = nil; batchReport = nil; pageCache = [:]
         rereadCount = 0; unchangedCount = 0
         phase = .reading(0)
         let ledger = self.ledger
@@ -181,16 +186,78 @@ final class AnalysisModel: ObservableObject {
 
     // MARK: Compléter
 
-    func completeSelected() {
+    /// Les cours cochés, sans jamais une évaluation.
+    private var selectedItems: [CourseDigest] {
+        incomplete.filter { completeChoice.contains($0.path) && !$0.isEvaluation && !CostEstimate.isEvaluationPath($0.path) }
+    }
+
+    static func costEngine(_ settings: RunSettings) -> CostEngine {
+        func prices(_ id: String) -> (Double, Double)? {
+            ClaudeEngine.models.first { $0.id == id }.map { ($0.inputPricePerMillion, $0.outputPricePerMillion) }
+        }
+        switch settings.engine {
+        case .apple: return .apple
+        case .claude:
+            guard let m = ClaudeEngine.models.first(where: { $0.id == settings.claudeModel }) else { return .unknown }
+            return .claudeAPI(label: m.label, inputPerMillion: m.inputPricePerMillion, outputPerMillion: m.outputPricePerMillion)
+        case .claudeCode:
+            let name = settings.claudeCodeModel.lowercased()
+            let p = ["opus", "sonnet", "haiku"].first { name.contains($0) }.flatMap { k in
+                ClaudeEngine.models.first { $0.id.contains(k) }.map { ($0.inputPricePerMillion, $0.outputPricePerMillion) }
+            }
+            return .claudeAccount(label: EngineKind.claudeCode.title, inputPerMillion: p?.0, outputPerMillion: p?.1)
+        }
+    }
+
+    /// Ouvre chaque PDF coché (jamais une évaluation) pour compter ses pages, puis calcule l'estimation.
+    private func estimate(for items: [CourseDigest]) async -> CostEstimate {
         let root = LibraryModel.shared.root
-        let items = incomplete.filter { completeChoice.contains($0.path) && !$0.isEvaluation && !LibraryTree.looksLikeEvaluation(($0.path as NSString).lastPathComponent) }
+        let missing = items.map(\.path).filter { pageCache[$0] == nil }
+        if !missing.isEmpty {
+            let counted = await Task.detached(priority: .userInitiated) { () -> [String: Int] in
+                var out: [String: Int] = [:]
+                for path in missing { out[path] = PageCounter.pages(of: root.appendingPathComponent(path), relativePath: path) ?? -1 }
+                return out
+            }.value
+            pageCache.merge(counted) { $1 }
+        }
+        let list = items.map { d -> CostItem in
+            let n = pageCache[d.path] ?? -1
+            return CostItem(path: d.path, pages: n >= 0 ? n : nil, isEvaluation: d.isEvaluation)
+        }
+        return CostEstimate.compute(items: list, engine: Self.costEngine(RunSettings.current()))
+    }
+
+    /// Recalcule le récapitulatif affiché dans la feuille d'analyse.
+    func refreshCost() {
+        costTask?.cancel()
+        let items = selectedItems
+        guard !items.isEmpty else { cost = nil; return }
+        costTask = Task {
+            let e = await estimate(for: items)
+            if !Task.isCancelled { cost = e }
+        }
+    }
+
+    func completeSelected() {
+        let items = selectedItems
         guard !items.isEmpty, !isBusy else { return }
-        let engine = RunSettings.current().engineDisplayName
-        let alert = NSAlert()
-        alert.messageText = "Compléter \(items.count) cours avec \(engine) ?"
-        alert.informativeText = "Les originaux ne sont pas modifiés : une copie « (complétée) » est créée à côté de chacun, sans jamais remplacer un fichier existant. Cela peut prendre plusieurs minutes et consomme ton moteur d'IA. Les évaluations ne sont jamais complétées. Si le moteur tombe en panne ou si ta limite est atteinte, le lot s'arrête."
-        alert.addButton(withTitle: "Compléter"); alert.addButton(withTitle: "Annuler")
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        preparing = true
+        Task {
+            let estimate = await estimate(for: items)
+            preparing = false
+            let engine = RunSettings.current().engineDisplayName
+            let alert = NSAlert()
+            alert.messageText = "Compléter \(items.count) \(Fr.plural(items.count, "cours", "cours")) avec \(engine) ?"
+            alert.informativeText = estimate.summary + "\n\nLes originaux ne sont pas modifiés : une copie « (complétée) » est créée à côté de chacun, sans jamais remplacer un fichier existant. Les évaluations ne sont jamais complétées. Si le moteur tombe en panne ou si ta limite est atteinte, le lot s'arrête."
+            alert.addButton(withTitle: "Compléter"); alert.addButton(withTitle: "Annuler")
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+            startBatch(items)
+        }
+    }
+
+    private func startBatch(_ items: [CourseDigest]) {
+        let root = LibraryModel.shared.root
         batchReport = nil
         let ledger = self.ledger
         task = Task {
@@ -312,7 +379,9 @@ struct AnalysisSheet: View {
             content
         }
         .frame(minWidth: 760, minHeight: 560)
-        .onAppear { if model.phase == .idle { model.run() } }
+        .onAppear { if model.phase == .idle { model.run() }; model.refreshCost() }
+        .onChange(of: model.completeChoice) { _, _ in model.refreshCost() }
+        .onChange(of: model.incomplete) { _, _ in model.refreshCost() }
     }
 
     @ViewBuilder private var content: some View {
@@ -382,11 +451,32 @@ struct AnalysisSheet: View {
                     }
                     Button("Arrêter après ce cours") { model.cancel() }
                 } else {
+                    CostSummaryView(cost: model.cost, preparing: model.preparing)
                     Button("Compléter la sélection…") { model.completeSelected() }.disabled(model.completeChoice.isEmpty)
                 }
                 if let r = model.batchReport { Text(r).font(.callout).textSelection(.enabled) }
                 Text("Détection locale : un cours déjà rempli peut parfois apparaître ici, vérifie la liste avant de lancer. Les cours déjà complétés par l'app n'y figurent plus.")
                     .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+    }
+}
+
+/// Récapitulatif du coût d'un lot (pages, estimation selon le moteur) : estimation, pas une mesure.
+struct CostSummaryView: View {
+    let cost: CostEstimate?
+    let preparing: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            if let cost {
+                ForEach(Array(cost.lines.enumerated()), id: \.offset) { i, line in
+                    Text(line).font(i == cost.lines.count - 1 ? .caption : .callout)
+                        .foregroundStyle(i == cost.lines.count - 1 ? .secondary : .primary)
+                }
+            } else {
+                Text(preparing ? "Comptage des pages…" : "Coche des cours pour voir une estimation du coût.")
+                    .font(.callout).foregroundStyle(.secondary)
             }
         }
     }

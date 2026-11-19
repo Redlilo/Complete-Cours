@@ -32,6 +32,7 @@ struct MainShell: View {
                 }
             }
             .transition(.opacity)
+            .safeAreaInset(edge: .top, spacing: 0) { AutoIntakeBanner() }
         }
         .animation(.easeInOut(duration: 0.15), value: navigator.mode)
     }

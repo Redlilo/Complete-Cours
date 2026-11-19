@@ -54,6 +54,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         CoursModel.shared.confirmLeavingCurrentWork(action: "quittes l'application") ? .terminateNow : .terminateCancel
     }
 
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        AutoIntake.shared.resumeIfEnabled()
+    }
+
     func applicationDidBecomeActive(_ notification: Notification) {
         // l'élève revient peut-être des Réglages Système (Apple Intelligence) ou du trousseau
         EngineStatus.shared.refresh()

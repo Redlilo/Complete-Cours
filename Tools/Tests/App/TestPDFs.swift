@@ -57,7 +57,9 @@ enum TestPDFs {
         text("Question : pourquoi faut-il économiser l'énergie ?", 50, 570)
         text(unders, 50, 548)
         text(unders, 50, 528)
-        text("Schéma de la chaîne d'énergie :", 50, 470)
+        // Pas de « : » en fin de ligne : depuis la détection « Libellé : » (TextLayer.colonRuns), un libellé qui se
+        // termine par deux-points compte comme un trou à droite. Ici le trou attendu est le cadre dessiné dessous.
+        text("Schéma de la chaîne d'énergie (cadre ci-dessous)", 50, 470)
         ctx.setStrokeColor(NSColor.black.cgColor)
         ctx.setLineWidth(1)
         ctx.stroke(CGRect(x: 50, y: 360, width: 300, height: 90))

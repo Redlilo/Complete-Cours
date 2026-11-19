@@ -91,8 +91,10 @@ enum LibraryTree {
 
     /// Dossier ou fichier d'évaluation : « Eval », « Évaluations », « Contrôle fin de thème », « EVAL PSE », « evalphisyque »…
     static func looksLikeEvaluation(_ name: String) -> Bool {
+        // par prudence, ces mots comptent n'importe où dans le nom (« Chap3 eval », « Seq 2 - Contrôle », « DS3 », « Mes Eval »)
         let n = folded(name)
-        return n.hasPrefix("eval") || n.hasPrefix("controle") || n.hasPrefix("ds ") || n.contains("evaluation")
+        return n.range(of: "\\b(eval\\w*|controle\\w*|interro\\w*|examen\\w*)\\b|\\bds\\s*\\d", options: .regularExpression) != nil
+            || n.hasPrefix("eval") || n.hasPrefix("controle") || n.contains("evaluation")
     }
 
     static func state(forName name: String) -> LibraryFileState {

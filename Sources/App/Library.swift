@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import PDFKit
+import Combine
 
 /// Lit le dossier des cours (par défaut ~/Desktop/Cours) et garde l'arborescence + les dossiers dépliés.
 @MainActor
@@ -16,6 +17,17 @@ final class LibraryModel: ObservableObject {
     @Published private(set) var problem: String?
     @Published var selected: LibraryFile?
     @Published var root: URL
+    /// Indexation du contenu en cours : (cours lus, total). nil quand il n'y a rien à lire.
+    @Published private(set) var indexProgress: (done: Int, total: Int)?
+    /// Cours dont le contenu contient la recherche (en plus des résultats par nom).
+    @Published private(set) var contentHits: [ContentHit] = []
+    /// Page et mots à montrer dans l'aperçu après un clic sur un résultat de contenu.
+    @Published private(set) var focus: PreviewFocus?
+
+    private var indexTask: Task<Void, Never>?
+    private var searchTask: Task<Void, Never>?
+    private var searchQuery = ""
+    private var bag = Set<AnyCancellable>()
 
     private init() {
         let defaults = UserDefaults.standard
@@ -25,6 +37,49 @@ final class LibraryModel: ObservableObject {
             root = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Desktop/Cours")
         }
         expanded = Set(defaults.stringArray(forKey: Self.expandedKey) ?? [])
+        // Un cours sélectionné devient « récent », d'où que vienne la sélection.
+        $selected.dropFirst().receive(on: DispatchQueue.main).sink { [weak self] file in
+            MainActor.assumeIsolated {
+                guard let self, let file else { return }
+                Recents.shared.touch(file.url)
+                if self.focus?.url != file.url { self.focus = nil }
+            }
+        }.store(in: &bag)
+    }
+
+    /// Sélectionne un cours (aperçu), éventuellement à la page d'un résultat de recherche.
+    func select(_ file: LibraryFile, page: Int? = nil, terms: [String] = []) {
+        focus = page.map { PreviewFocus(url: file.url, page: $0, terms: terms) }
+        selected = file
+    }
+
+    // MARK: Recherche dans le contenu
+
+    func updateSearch(_ query: String) {
+        searchQuery = query
+        searchTask?.cancel()
+        guard !ContentIndex.terms(query).isEmpty else { contentHits = []; return }
+        searchTask = Task {
+            try? await Task.sleep(nanoseconds: 200_000_000)
+            if Task.isCancelled { return }
+            let hits = await Task.detached(priority: .userInitiated) { ContentIndex.shared.search(query) }.value
+            if !Task.isCancelled { contentHits = hits }
+        }
+    }
+
+    private func startIndexing(_ found: [LibraryFile]) {
+        indexTask?.cancel()
+        indexTask = Task {
+            let task = Task.detached(priority: .background) { [weak self] in
+                ContentIndex.shared.update(files: found, isCancelled: { Task.isCancelled }, progress: { done, total in
+                    Task { @MainActor in self?.indexProgress = done >= total ? nil : (done, total) }
+                })
+            }
+            await withTaskCancellationHandler { await task.value } onCancel: { task.cancel() }
+            if Task.isCancelled { return }
+            indexProgress = nil
+            updateSearch(searchQuery)
+        }
     }
 
     func chooseRoot() {
@@ -52,6 +107,7 @@ final class LibraryModel: ObservableObject {
             files = found
             tree = LibraryTree.build(found)
             isScanning = false
+            startIndexing(found)
             if !FileManager.default.fileExists(atPath: root.path) {
                 problem = "Le dossier « \(root.lastPathComponent) » est introuvable. Choisis le dossier de tes cours."
             } else if found.isEmpty {
@@ -109,18 +165,48 @@ struct ThumbnailView: View {
     }
 }
 
+/// Page à montrer et mots à surligner dans l'aperçu (après un clic sur un résultat de contenu).
+struct PreviewFocus: Equatable {
+    let url: URL
+    let page: Int
+    let terms: [String]
+}
+
 /// Le PDF en entier, défilant, pour l'aperçu.
 struct PDFKitView: NSViewRepresentable {
     let url: URL
+    var focus: PreviewFocus?
+
+    final class Coordinator { var applied: PreviewFocus? }
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
     func makeNSView(context: Context) -> PDFView {
         let v = PDFView()
         v.autoScales = true; v.displayMode = .singlePageContinuous; v.displaysPageBreaks = true
         v.backgroundColor = .underPageBackgroundColor
         v.document = PDFDocument(url: url)
+        apply(to: v, context: context)
         return v
     }
     func updateNSView(_ v: PDFView, context: Context) {
-        if v.document?.documentURL != url { v.document = PDFDocument(url: url) }
+        if v.document?.documentURL != url { v.document = PDFDocument(url: url); context.coordinator.applied = nil }
+        apply(to: v, context: context)
+    }
+
+    private func apply(to v: PDFView, context: Context) {
+        guard let focus, focus.url == url, context.coordinator.applied != focus, let doc = v.document else { return }
+        context.coordinator.applied = focus
+        var marks: [PDFSelection] = []
+        for t in focus.terms {
+            for sel in doc.findString(t, withOptions: [.caseInsensitive, .diacriticInsensitive]).prefix(100) {
+                sel.color = NSColor.systemYellow.withAlphaComponent(0.6)
+                marks.append(sel)
+            }
+        }
+        v.highlightedSelections = marks
+        if let page = doc.page(at: focus.page - 1) {
+            DispatchQueue.main.async { v.go(to: page) }
+        }
     }
 }
 
@@ -131,15 +217,19 @@ struct LibraryView: View {
     @ObservedObject private var intake = IntakeModel.shared
     @State private var search = ""
     @State private var showArchive = false
+    @State private var showAutoIntake = false
     @AppStorage("archiveOriginals") private var archiveAuto = true
     @State private var showAnalysis = false
     @State private var showHistory = false
     @ObservedObject private var history = MoveHistory.shared
     @State private var dropTargeted = false
 
+    @ObservedObject private var recents = Recents.shared
+
     private var rows: [LibraryRow] {
         LibraryTree.rows(root: library.tree, expanded: library.expanded, query: search)
     }
+    private var searching: Bool { !search.trimmingCharacters(in: .whitespaces).isEmpty }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -166,6 +256,7 @@ struct LibraryView: View {
         .sheet(isPresented: $showAnalysis) { AnalysisSheet() }
         .sheet(isPresented: $showHistory) { MoveHistorySheet() }
         .sheet(isPresented: $showArchive) { ArchiveSheet() }
+        .sheet(isPresented: $showAutoIntake) { AutoIntakeSheet() }
         .overlay { if dropTargeted { RoundedRectangle(cornerRadius: 14).strokeBorder(Color.accentColor, style: StrokeStyle(lineWidth: 3, dash: [10, 6])).padding(6).allowsHitTesting(false) } }
         .onDrop(of: [.fileURL], isTargeted: $dropTargeted) { providers in
             DropLoader.urls(from: providers) { urls in IntakeModel.shared.handle(urls) }
@@ -175,22 +266,45 @@ struct LibraryView: View {
 
     private var listPane: some View {
         Group {
-            if rows.isEmpty && !library.isScanning {
+            if rows.isEmpty && library.contentHits.isEmpty && !library.isScanning {
                 ContentUnavailableView.search(text: search)
             } else {
                 ScrollView {
                     LazyVStack(spacing: 4) {
+                        if !searching { RecentsSection(library: library, recents: recents) }
                         ForEach(rows) { row in
                             switch row.content {
                             case .folder(let folder, let expanded): FolderRowView(folder: folder, depth: row.depth, expanded: expanded)
                             case .file(let file): FileRowView(file: file, depth: row.depth)
                             }
                         }
+                        if searching { contentResults }
                     }
                     .padding(.horizontal, 14).padding(.vertical, 10)
                 }
                 .overlay { if library.isScanning && library.files.isEmpty { ProgressView("Recherche des cours…") } }
             }
+        }
+    }
+
+    /// Résultats trouvés DANS les PDF (après ceux trouvés par le nom).
+    @ViewBuilder private var contentResults: some View {
+        let terms = ContentIndex.terms(search)
+        if !library.contentHits.isEmpty {
+            HStack {
+                Text("Dans le contenu des cours").font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
+                Spacer()
+            }
+            .padding(.horizontal, 10).padding(.top, 12).padding(.bottom, 2)
+            ForEach(library.contentHits) { hit in
+                if let file = library.files.first(where: { $0.url == hit.url }) {
+                    ContentHitRow(file: file, hit: hit, terms: terms, root: library.root)
+                }
+            }
+        }
+        if let p = library.indexProgress {
+            Text("Les cours encore en lecture (\(p.done)/\(p.total)) peuvent manquer dans ces résultats.")
+                .font(.caption).foregroundStyle(.tertiary).padding(.horizontal, 10).padding(.top, 8)
         }
     }
 
@@ -225,13 +339,23 @@ struct LibraryView: View {
         HStack(spacing: 10) {
             VStack(alignment: .leading, spacing: 2) {
                 Text("Mes cours").font(.system(size: 26, weight: .bold, design: .rounded))
-                Text("\(library.files.count) PDF · \((library.root.path as NSString).abbreviatingWithTildeInPath)")
-                    .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                HStack(spacing: 8) {
+                    Text("\(library.files.count) PDF · \((library.root.path as NSString).abbreviatingWithTildeInPath)")
+                        .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    if let p = library.indexProgress {
+                        HStack(spacing: 4) {
+                            ProgressView().controlSize(.mini)
+                            Text("Indexation \(p.done)/\(p.total)").font(.caption).monospacedDigit().foregroundStyle(.tertiary)
+                        }
+                        .help("L'app lit le texte de tes cours pour que tu puisses chercher un mot dedans. Tout reste sur ton Mac.")
+                    }
+                }
             }
             Spacer()
             HStack(spacing: 6) {
                 Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
                 TextField("Chercher", text: $search).textFieldStyle(.plain)
+                    .onChange(of: search) { _, q in library.updateSearch(q) }
             }
             .padding(.horizontal, 10).padding(.vertical, 6)
             .background(.quaternary, in: Capsule()).frame(maxWidth: 190)
@@ -246,6 +370,7 @@ struct LibraryView: View {
                 Button("Tout replier") { withAnimation(.snappy(duration: 0.15)) { library.collapseAll() } }.disabled(!search.isEmpty)
                 Divider()
                 Button("Ranger les originaux vides…") { showArchive = true }
+                Button("Dépôt automatique…") { showAutoIntake = true }
                 Toggle("Ranger l'original après chaque complétion", isOn: $archiveAuto)
                 Button("Historique des rangements…") { showHistory = true }
                 Button("Actualiser") { library.refresh() }
@@ -337,11 +462,11 @@ private struct FileRowView: View {
         .contentShape(Rectangle())
         .onHover { hover = $0 }
         .onTapGesture(count: 2) { openByDefault() }
-        .onTapGesture { library.selected = file }
+        .onTapGesture { library.select(file) }
         .contextMenu {
-            if !file.isEvaluation { Button("Compléter le cours") { navigator.complete(file.url) } }
-            Button("Fiche de révision") { navigator.makeSheet(file.url) }
-            Button("Corrigé d'évaluation (après la note)") { navigator.correct(file.url) }
+            if !file.isEvaluation { Button("Compléter le cours") { Recents.shared.touch(file.url); navigator.complete(file.url) } }
+            Button("Fiche de révision") { Recents.shared.touch(file.url); navigator.makeSheet(file.url) }
+            Button("Corrigé d'évaluation (après la note)") { Recents.shared.touch(file.url); navigator.correct(file.url) }
             Divider()
             Button("Afficher dans le Finder") { NSWorkspace.shared.activateFileViewerSelecting([file.url]) }
         }
@@ -350,16 +475,17 @@ private struct FileRowView: View {
     @ViewBuilder private var actions: some View {
         HStack(spacing: 6) {
             if file.isEvaluation {
-                Button("Corriger") { navigator.correct(file.url) }.buttonStyle(.borderedProminent)
+                Button("Corriger") { Recents.shared.touch(file.url); navigator.correct(file.url) }.buttonStyle(.borderedProminent)
             } else {
-                if file.state == .vierge { Button("Compléter") { navigator.complete(file.url) }.buttonStyle(.borderedProminent) }
-                Button("Fiche") { navigator.makeSheet(file.url) }.buttonStyle(.bordered)
+                if file.state == .vierge { Button("Compléter") { Recents.shared.touch(file.url); navigator.complete(file.url) }.buttonStyle(.borderedProminent) }
+                Button("Fiche") { Recents.shared.touch(file.url); navigator.makeSheet(file.url) }.buttonStyle(.bordered)
             }
         }
         .controlSize(.small)
     }
 
     private func openByDefault() {
+        Recents.shared.touch(file.url)
         if file.isEvaluation { navigator.correct(file.url) }
         else if file.state == .vierge { navigator.complete(file.url) }
         else { navigator.makeSheet(file.url) }
@@ -380,10 +506,10 @@ private struct DocumentPreview: View {
                     StateTags(file: file)
                     Spacer()
                     if file.isEvaluation {
-                        Button("Corriger") { navigator.correct(file.url) }.buttonStyle(.borderedProminent)
+                        Button("Corriger") { Recents.shared.touch(file.url); navigator.correct(file.url) }.buttonStyle(.borderedProminent)
                     } else {
-                        if file.state == .vierge { Button("Compléter") { navigator.complete(file.url) }.buttonStyle(.borderedProminent) }
-                        Button("Fiche") { navigator.makeSheet(file.url) }.buttonStyle(.bordered)
+                        if file.state == .vierge { Button("Compléter") { Recents.shared.touch(file.url); navigator.complete(file.url) }.buttonStyle(.borderedProminent) }
+                        Button("Fiche") { Recents.shared.touch(file.url); navigator.makeSheet(file.url) }.buttonStyle(.bordered)
                     }
                     Button { NSWorkspace.shared.activateFileViewerSelecting([file.url]) } label: { Image(systemName: "folder") }
                         .help("Afficher dans le Finder")
@@ -392,7 +518,107 @@ private struct DocumentPreview: View {
             }
             .padding(14)
             Divider()
-            PDFKitView(url: file.url).id(file.url)
+            PDFKitView(url: file.url, focus: LibraryModel.shared.focus).id(file.url)
         }
+    }
+}
+
+// MARK: - Reprendre où tu étais
+
+private struct RecentsSection: View {
+    @ObservedObject var library: LibraryModel
+    @ObservedObject var recents: Recents
+
+    var body: some View {
+        let files: [LibraryFile] = recents.visible().compactMap { url in
+            library.files.first { $0.url.standardizedFileURL.path == url.path }
+        }
+        if !files.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text("Reprendre où tu étais").font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Effacer") { recents.clear() }
+                        .buttonStyle(.plain).font(.caption).foregroundStyle(.tertiary)
+                        .help("Vider la liste des derniers cours ouverts (aucun fichier n'est touché)")
+                }
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 10) {
+                        ForEach(files) { file in RecentCard(file: file, selected: library.selected?.id == file.id) }
+                    }
+                    .padding(.vertical, 2)
+                }
+            }
+            .padding(.horizontal, 10).padding(.bottom, 10)
+        }
+    }
+}
+
+private struct RecentCard: View {
+    let file: LibraryFile
+    let selected: Bool
+    @State private var hover = false
+
+    var body: some View {
+        Button { LibraryModel.shared.select(file) } label: {
+            VStack(spacing: 6) {
+                ThumbnailView(url: file.url, size: CGSize(width: 54, height: 72))
+                Text(file.name).font(.caption).lineLimit(2).multilineTextAlignment(.center)
+                    .frame(width: 84, height: 30, alignment: .top)
+            }
+            .padding(8)
+            .background(RoundedRectangle(cornerRadius: 10).fill(selected ? Color.accentColor.opacity(0.18) : Color.primary.opacity(hover ? 0.09 : 0.05)))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hover = $0 }
+        .accessibilityLabel("Reprendre \(file.name)")
+    }
+}
+
+// MARK: - Résultat dans le contenu
+
+private struct ContentHitRow: View {
+    let file: LibraryFile
+    let hit: ContentHit
+    let terms: [String]
+    let root: URL
+    @ObservedObject private var library = LibraryModel.shared
+    @State private var hover = false
+
+    private var excerpt: AttributedString {
+        var a = AttributedString(hit.snippet)
+        for r in ContentIndex.highlightRanges(in: hit.snippet, terms: terms) {
+            if let lo = AttributedString.Index(r.lowerBound, within: a), let hi = AttributedString.Index(r.upperBound, within: a) {
+                a[lo..<hi].font = .caption.bold()
+                a[lo..<hi].backgroundColor = Color.yellow.opacity(0.35)
+            }
+        }
+        return a
+    }
+
+    var body: some View {
+        let isSelected = library.selected?.id == file.id
+        Button { library.select(file, page: hit.page, terms: terms) } label: {
+            HStack(alignment: .top, spacing: 10) {
+                ThumbnailView(url: file.url)
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 6) {
+                        Text(file.name).font(.subheadline.weight(.medium)).lineLimit(1)
+                        Text("page \(hit.page)").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                            .padding(.horizontal, 6).padding(.vertical, 1).background(.quaternary, in: Capsule())
+                    }
+                    Text(file.folders.joined(separator: " › ")).font(.caption2).foregroundStyle(.tertiary).lineLimit(1)
+                    Text(excerpt).font(.caption).foregroundStyle(.secondary).lineLimit(3)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 10).padding(.vertical, 6)
+            .background(RoundedRectangle(cornerRadius: 10).fill(isSelected ? Color.accentColor.opacity(0.18) : (hover ? Color.primary.opacity(0.05) : .clear)))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hover = $0 }
+        .accessibilityLabel("\(file.name), page \(hit.page) : \(hit.snippet)")
     }
 }

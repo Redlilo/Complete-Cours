@@ -1,33 +1,25 @@
 #!/bin/bash
-# Tests de la détection des zones à partir du texte du PDF.
-#   1. cas synthétiques (PDF généré : trous attendus, faux trous à éviter) -> trouvés / faux / manqués
-#   2. PDF de cours réels (copiés dans build/texte/pdf, lecture seule sur l'original) -> zones par page et par source, temps
+# Tests de la détection des zones à partir du texte du PDF. Ne lit AUCUN vrai cours de l'élève.
+# Ce que la suite vérifie :
+#   1. cas synthétiques (main.swift : PDF généré avec des trous connus et des faux trous à éviter : sommaires à
+#      points, « etc... », deux-points suivis d'une liste...) -> trouvés / faux / manqués, sans régression ;
+#   2. PDF fabriqués (genpdf.swift, mêmes générateurs que la suite App : texte à pointillés/soulignés/cadre,
+#      champs de formulaire, page tournée, page rognée, page vide) passés dans le harnais : nombre de zones
+#      par page et par source comparé à reference.txt, plus un temps d'analyse maximal par PDF.
 # usage : Tools/Tests/Text/run.sh          compare à reference.txt, signale les régressions
 #         Tools/Tests/Text/run.sh --maj    écrit une nouvelle référence (après une amélioration vérifiée)
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../../.." && pwd)"
-COURS="${COURS:-$HOME/Desktop/Cours}"
 WORK="$ROOT/build/texte"
 REF="$HERE/reference.txt"
 MAJ=0; [ "$1" = "--maj" ] && MAJ=1
 mkdir -p "$WORK/pdf" "$WORK/out" || exit 1
 
-REELS=(
-  "Économie-Gestion/Mission 1 - Présenter un secteur d'activité (Safran).pdf:safran"
-  "Co-intervention/Portail - Séance 1 - Découvrir Copilot et charte IA.pdf:portail_s1"
-  "Co-intervention/Fiche 1 - Conversions.pdf:fiche_conv"
-  "Histoire-Géographie/Thème 1 - L'expansion du monde connu/Séance 2 - La mondialisation ibérique.pdf:hg_s2"
-  "Histoire-Géographie/Thème 1 - L'expansion du monde connu/SEANCE 4 (complétée).pdf:hg_s4c"
-  "Physique-Chimie/Cours/Le pH.pdf:ph"
-  "Physique-Chimie/Cours/Séquence 1 - Chimie partie 1.pdf:chimie1"
-  "Physique-Chimie/Exercices/Exercices - Les ions.pdf:ions"
-  "Français/Objet d'étude 1 - S'informer/Séance 1 - Origine et traitement de l'information.pdf:fr_s1"
-  "Maths/Cours/Séquence 1 - Statistiques à une variable.pdf:maths_s1"
-)
-for entry in "${REELS[@]}"; do
-  rel="${entry%%:*}"; nom="${entry##*:}"
-  [ -f "$WORK/pdf/$nom.pdf" ] || cp "$COURS/$rel" "$WORK/pdf/$nom.pdf" || { echo "copie impossible : $rel"; exit 1; }
-done
+REELS=("texte" "tourne" "rognage" "vide")
+
+swiftc -O -parse-as-library -swift-version 5 -target arm64-apple-macos26.0 "$HERE/genpdf.swift" "$ROOT/Tools/Tests/App/TestPDFs.swift" -o "$WORK/genpdf" 2>"$WORK/compile_gen.log" || { echo "COMPILATION genpdf échouée"; grep error "$WORK/compile_gen.log" | head; exit 1; }
+rm -rf "$WORK/pdf"; mkdir -p "$WORK/pdf"
+"$WORK/genpdf" "$WORK/pdf" || { echo "fabrication des PDF impossible"; exit 1; }
 
 swiftc -O -swift-version 5 -target arm64-apple-macos26.0 "$ROOT"/Sources/Core/*.swift "$ROOT"/Tools/Harness/main.swift -o "$WORK/harness" 2>"$WORK/compile_harness.log" || { echo "COMPILATION harnais échouée"; grep error "$WORK/compile_harness.log" | head; exit 1; }
 swiftc -O -swift-version 5 -target arm64-apple-macos26.0 "$ROOT"/Sources/Core/*.swift "$HERE/main.swift" -o "$WORK/texte_test" 2>"$WORK/compile_test.log" || { echo "COMPILATION test échouée"; grep error "$WORK/compile_test.log" | head; exit 1; }
@@ -36,8 +28,7 @@ swiftc -O -swift-version 5 -target arm64-apple-macos26.0 "$ROOT"/Sources/Core/*.
 cat "$WORK/synthese.txt"
 SYN=$(grep '^SYNTHESE' "$WORK/synthese.txt")
 : > "$WORK/reel.txt"
-for entry in "${REELS[@]}"; do
-  nom="${entry##*:}"
+for nom in "${REELS[@]}"; do
   mkdir -p "$WORK/out/$nom"
   "$WORK/harness" zones "$WORK/pdf/$nom.pdf" "$WORK/out/$nom" --blank > "$WORK/out/$nom.txt" 2>&1
   awk -v d="$nom" '
