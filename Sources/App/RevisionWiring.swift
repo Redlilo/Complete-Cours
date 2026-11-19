@@ -29,9 +29,26 @@ enum RevisionWiring {
     static func status() -> RevisionEngineStatus {
         let settings = RunSettings.current()
         switch settings.engine {
-        case .apple, .claudeCode:
+        case .apple:
             return RevisionEngineStatus(name: settings.engineDisplayName, usable: false, supportsImages: false,
                                         issue: RevisionEngineStatus.message, needsSettings: true)
+        case .claudeCode:
+            #if COMPTE_PERSO
+            // « Claude (mon compte) » : le programme `claude` est lancé à la demande ; son état se voit dans les Réglages.
+            guard ClaudeCodeEngine.locateCLI(override: settings.claudeCodePath) != nil else {
+                return RevisionEngineStatus(
+                    name: settings.engineDisplayName, usable: false, supportsImages: true,
+                    issue: RevisionIssue(title: "Claude (mon compte) est introuvable",
+                                         what: Fr.sentence(ClaudeCodeEngine.missingMessage),
+                                         todo: "Vérifie le moteur dans les Réglages."),
+                    needsSettings: true)
+            }
+            return RevisionEngineStatus(name: settings.engineDisplayName, usable: true, supportsImages: true,
+                                        issue: nil, needsSettings: false)
+            #else
+            return RevisionEngineStatus(name: settings.engineDisplayName, usable: false, supportsImages: false,
+                                        issue: RevisionEngineStatus.message, needsSettings: true)
+            #endif
         case .claude:
             let engines = EngineStatus.shared
             engines.refresh()

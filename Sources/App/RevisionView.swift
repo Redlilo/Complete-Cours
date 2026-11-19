@@ -5,6 +5,8 @@ import UniformTypeIdentifiers
 
 struct RevisionRootView: View {
     @ObservedObject var model: RevisionModel
+    /// Parties proposées ; un seul onglet = pas de sélecteur (mode « Évaluations »).
+    var tabs: [RevisionTab] = RevisionTab.allCases
     @Environment(\.openSettings) private var openSettings
     @State private var dropTargeted = false
 
@@ -15,13 +17,15 @@ struct RevisionRootView: View {
             if !model.engine.usable { engineBanner }
             if let activity = model.activity { ActivityBar(activity: activity) { model.cancel() } }
             if model.hasDocument {
-                Picker("Partie", selection: $model.tab) {
-                    ForEach(RevisionTab.allCases) { Text($0.title).tag($0) }
+                if tabs.count > 1 {
+                    Picker("Partie", selection: $model.tab) {
+                        ForEach(tabs) { Text($0.title).tag($0) }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .accessibilityLabel("Partie de la révision")
+                    .padding(.horizontal, 20).padding(.vertical, 10)
                 }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .accessibilityLabel("Partie de la révision")
-                .padding(.horizontal, 20).padding(.vertical, 10)
                 Divider()
                 Group {
                     switch model.tab {
@@ -51,7 +55,10 @@ struct RevisionRootView: View {
             }
             return true
         }
-        .onAppear { model.refreshEngine() }
+        .onAppear {
+            model.refreshEngine()
+            if !tabs.contains(model.tab), let first = tabs.first { model.tab = first }
+        }
         .frame(minWidth: 640, minHeight: 480)
     }
 
@@ -66,7 +73,6 @@ struct RevisionRootView: View {
             Spacer()
             Button(model.hasDocument ? "Changer de PDF…" : "Ouvrir…") { model.chooseDocument() }
                 .disabled(model.isBusy)
-                .keyboardShortcut("o")
         }
         .padding(.horizontal, 20).padding(.vertical, 12)
         .accessibilityElement(children: .contain)

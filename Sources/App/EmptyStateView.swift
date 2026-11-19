@@ -4,7 +4,6 @@ import SwiftUI
 struct EmptyStateView: View {
     @EnvironmentObject var model: CoursModel
     @EnvironmentObject var engines: EngineStatus
-    @Environment(\.openWindow) private var openWindow
     let dropTargeted: Bool
     let showWelcome: () -> Void
     @AppStorage(Pref.engine) private var engineRaw = Pref.defaultEngine.rawValue
@@ -13,8 +12,8 @@ struct EmptyStateView: View {
         ScrollView {
             VStack(spacing: 22) {
                 dropArea
-                Button { openWindow(id: "revision") } label: {
-                    Label("Réviser un cours", systemImage: "graduationcap")
+                Button { Navigator.shared.mode = .fiches } label: {
+                    Label("Fiches de révision", systemImage: "graduationcap")
                 }
                 .controlSize(.large)
                 .help("Fiche de synthèse, questions d'entraînement et corrigé d'une évaluation rendue (⇧⌘R)")

@@ -24,18 +24,14 @@ struct CompleteCoursApp: App {
 
     var body: some Scene {
         Window("Complète-Cours", id: "main") {
-            ContentView()
+            MainShell()
                 .environmentObject(model)
                 .environmentObject(engines)
-                .frame(minWidth: 880, minHeight: 560)
+                .environmentObject(Navigator.shared)
+                .frame(minWidth: 980, minHeight: 600)
         }
         .defaultSize(width: 1200, height: 800)
         .commands { AppCommands(model: model, engines: engines) }
-
-        Window("Révision", id: "revision") {
-            RevisionWindow()
-        }
-        .defaultSize(width: 920, height: 720)
 
         Settings {
             SettingsView()
@@ -50,6 +46,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 
     func application(_ application: NSApplication, open urls: [URL]) {
+        Navigator.shared.mode = .completer
         CoursModel.shared.handleDrop(urls)
     }
 
@@ -69,11 +66,17 @@ struct AppCommands: Commands {
     @ObservedObject var model: CoursModel
     @ObservedObject var engines: EngineStatus
     @Environment(\.openSettings) private var openSettings
-    @Environment(\.openWindow) private var openWindow
 
     var body: some Commands {
         CommandGroup(replacing: .newItem) {
-            Button("Ouvrir…") { model.presentOpenPanel() }
+            Button("Ouvrir…") {
+                switch Navigator.shared.mode {
+                case .fiches, .evaluations: RevisionModel.live.chooseDocument()
+                case .bibliotheque, .completer:
+                    Navigator.shared.mode = .completer
+                    model.presentOpenPanel()
+                }
+            }
                 .keyboardShortcut("o")
             Menu("Ouvrir récent") {
                 ForEach(model.recents, id: \.self) { url in
@@ -104,8 +107,10 @@ struct AppCommands: Commands {
                 .keyboardShortcut(".")
                 .disabled(!model.isRunning)
             Divider()
-            Button("Réviser…") { openWindow(id: "revision") }
-                .keyboardShortcut("r", modifiers: [.command, .shift])
+            ForEach(AppMode.allCases) { mode in
+                Button(mode.title) { Navigator.shared.mode = mode }
+                    .keyboardShortcut(mode.shortcut)
+            }
             Button("Ajouter une zone à la main") { model.beginDrawingZone() }
                 .keyboardShortcut("n", modifiers: [.command, .shift])
                 .disabled(!model.canDrawZone)

@@ -37,8 +37,10 @@ Sources/Core/       (module partagé, compilé avec l'app et avec les outils de 
   ClaudeEngine.swift    moteur Claude (API Messages, HTTP direct, images)                 [agent « claude »]
   AppleEngine.swift     moteur Apple Intelligence (FoundationModels, texte seul)          [agent « apple »]
   ClaudeCodeEngine.swift  moteur « Claude (mon compte) » : tout le fichier est sous #if COMPTE_PERSO (absent de la version distribuée)
+  LibraryTree.swift     bibliothèque : arborescence des PDF du dossier des cours (même rangement que sur le disque),
+                        lignes affichées, recherche, reconnaissance des évaluations (testé par Tools/Tests/Library)
   AnswerRenderer.swift  écriture des réponses dans le PDF + export                        [agent « rendu »]
-Sources/App/        l'application SwiftUI                                                [agent « interface »]
+Sources/App/        l'application SwiftUI : MainShell (barre latérale 4 parties) · Navigation (modes, passerelles) · Library (bibliothèque)                                                [agent « interface »]
 Tools/Harness/      outil CLI de test de la détection (voir plus bas)                    [Claude principal]
 Tools/Tests/<x>/    tests propres à chaque agent
 build.sh, Resources/, Distribution/LISEZMOI.txt, README.md   empaquetage .app, icône, doc                          [agent « paquet »]
