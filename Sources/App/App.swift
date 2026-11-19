@@ -9,6 +9,9 @@ enum Launcher {
         if CommandLine.arguments.contains("--selftest") {
             SelfTest.runAndExit(CommandLine.arguments)
         }
+        if CommandLine.arguments.contains("--archive-originals") {
+            ArchiveCLI.runAndExit(CommandLine.arguments)
+        }
         CompleteCoursApp.main()
     }
 }
@@ -110,6 +113,10 @@ struct AppCommands: Commands {
             Button("Annuler le traitement") { model.cancelRun() }
                 .keyboardShortcut(".")
                 .disabled(!model.isRunning)
+            Button("Ranger les originaux vides…") {
+                Navigator.shared.mode = .bibliotheque
+                Navigator.shared.showArchive = true
+            }
             Divider()
             ForEach(AppMode.allCases) { mode in
                 Button(mode.title) { Navigator.shared.mode = mode }

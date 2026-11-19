@@ -1,4 +1,5 @@
 import Foundation
+import PDFKit
 
 // « Ne garder que les versions complétées » : le PDF vide d'un cours déjà complété est rangé dans
 // « _Originaux avant completion », avec la même arborescence que dans le dossier des cours.
@@ -80,6 +81,14 @@ enum OriginalsArchive {
             target = dir.appendingPathComponent("\(base) (\(n))").appendingPathExtension(ext); n += 1
         }
         return target
+    }
+
+    /// Garde-fou avant de ranger : la version complétée s'ouvre et a au moins autant de pages que l'original
+    /// (on ne range jamais l'original d'une copie abîmée ou tronquée).
+    static func completedLooksSound(_ plan: ArchivePlan) -> Bool {
+        guard let done = PDFDocument(url: plan.completed), !done.isLocked, done.pageCount > 0 else { return false }
+        guard let orig = PDFDocument(url: plan.original) else { return true }
+        return done.pageCount >= orig.pageCount
     }
 
     // MARK: Déplacement

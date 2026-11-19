@@ -217,6 +217,7 @@ struct LibraryView: View {
     @ObservedObject private var intake = IntakeModel.shared
     @State private var search = ""
     @State private var showArchive = false
+    @ObservedObject private var nav = Navigator.shared
     @State private var showAutoIntake = false
     @AppStorage("archiveOriginals") private var archiveAuto = true
     @State private var showAnalysis = false
@@ -256,6 +257,7 @@ struct LibraryView: View {
         .sheet(isPresented: $showAnalysis) { AnalysisSheet() }
         .sheet(isPresented: $showHistory) { MoveHistorySheet() }
         .sheet(isPresented: $showArchive) { ArchiveSheet() }
+        .onChange(of: nav.showArchive) { _, wanted in if wanted { showArchive = true; nav.showArchive = false } }
         .sheet(isPresented: $showAutoIntake) { AutoIntakeSheet() }
         .overlay { if dropTargeted { RoundedRectangle(cornerRadius: 14).strokeBorder(Color.accentColor, style: StrokeStyle(lineWidth: 3, dash: [10, 6])).padding(6).allowsHitTesting(false) } }
         .onDrop(of: [.fileURL], isTargeted: $dropTargeted) { providers in

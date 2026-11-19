@@ -54,6 +54,10 @@ struct ArchiveSheet: View {
     private func apply() {
         var ids: [UUID] = [], failures: [String] = []
         for p in plans where chosen.contains(p.id) {
+            guard OriginalsArchive.completedLooksSound(p) else {
+                failures.append("« \(p.completed.lastPathComponent) » semble abîmée ou incomplète : « \(p.original.lastPathComponent) » reste où il est.")
+                continue
+            }
             do { ids.append(try OriginalsArchive.archive(p, ledger: CourseLedger.shared).id) }
             catch { failures.append(Fr.sentence(error.localizedDescription)) }
         }
@@ -61,5 +65,30 @@ struct ArchiveSheet: View {
         message = "\(ids.count) original\(ids.count > 1 ? "s rangés" : " rangé"). Tu peux annuler depuis l'historique des rangements." + (failures.isEmpty ? "" : "\n" + failures.joined(separator: "\n"))
         library.refresh()
         plans = []; chosen = []
+    }
+}
+
+/// Sans fenêtre : `Complete-Cours --archive-originals` liste les originaux vides à ranger ; avec `--apply` il les range
+/// (journal compris, donc annulable depuis l'historique des rangements).
+@MainActor
+enum ArchiveCLI {
+    static func runAndExit(_ args: [String]) -> Never {
+        let root = LibraryModel.shared.root
+        let ledger = CourseLedger.shared
+        let plans = OriginalsArchive.plan(files: LibraryTree.scan(root), root: root, completions: ledger.completions)
+        func rel(_ u: URL) -> String { u.path.replacingOccurrences(of: root.path + "/", with: "") }
+        print("\(plans.count) original(aux) vide(s) à ranger :")
+        for p in plans { print("  \(rel(p.original))\n     garde : \(rel(p.completed))\n     vers  : \(rel(p.destination))") }
+        if args.contains("--apply") {
+            var done = 0
+            for p in plans {
+                guard OriginalsArchive.completedLooksSound(p) else { print("  non rangé (copie abîmée ou tronquée) : \(rel(p.original))"); continue }
+                do { try OriginalsArchive.archive(p, ledger: ledger); done += 1 }
+                catch { print("  refusé : \(Fr.sentence(error.localizedDescription))") }
+            }
+            print("\(done) original(aux) rangé(s).")
+        }
+        fflush(stdout)
+        exit(0)
     }
 }

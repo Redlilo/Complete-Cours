@@ -51,6 +51,8 @@ final class Navigator: ObservableObject {
     static let shared = Navigator()
 
     @Published var mode: AppMode = .bibliotheque
+    /// Demande venue du menu « Cours » : ouvrir l'écran « Ranger les originaux vides ».
+    @Published var showArchive = false
 
     func complete(_ url: URL) {
         mode = .completer
