@@ -87,10 +87,12 @@ struct ContentView: View {
             if model.isRunning {
                 Button(role: .cancel) { model.cancelRun() } label: { Label("Annuler", systemImage: "stop.circle") }
                     .help("Arrêter le traitement (⌘.)")
+                    .accessibilityLabel("Annuler le traitement")
             } else {
                 Button {
                     Actions.complete(model: model, engines: engines) { openSettings() }
-                } label: { Label("Compléter le cours", systemImage: "wand.and.stars") }
+                } label: { Label("Compléter le cours", systemImage: "wand.and.stars").labelStyle(.titleAndIcon) }
+                    .buttonStyle(.borderedProminent)
                     .help("Compléter le cours avec \(RunSettings.current().engineDisplayName) (⌘R)")
                     .disabled(!model.canComplete)
             }

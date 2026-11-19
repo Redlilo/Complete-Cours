@@ -3,7 +3,7 @@ import AppKit
 import PDFKit
 
 /// Mode de test sans fenêtre ni clic :
-///   Complete-Cours --selftest <entrée.pdf> <sortie.pdf> [--engine apple|claude] [--claude-url URL] [--no-humanize]
+///   Complete-Cours --selftest <entrée.pdf> <sortie.pdf> [--engine apple|claude|claudeCode] [--claude-url URL] [--no-humanize]
 /// Il suit la chaîne de l'interface (analyse, complétion, écriture sur l'aperçu, export aplati), écrit un résumé JSON
 /// sur la sortie standard (la progression va sur la sortie d'erreur) et quitte avec 0 (tout va bien) ou 1.
 /// La clé Claude vient de la variable d'environnement CC_API_KEY, jamais d'un argument.
@@ -42,92 +42,50 @@ enum SelfTest {
         var settings = RunSettings.current()
         settings.engine = options.engine
         settings.humanize = options.humanize
-        settings.flatten = true
-        let defaults = UserDefaults(suiteName: "fr.complete-cours.selftest") ?? .standard
-        defaults.removePersistentDomain(forName: "fr.complete-cours.selftest")
-        let snapshot = settings
-        let model = CoursModel(
-            settings: { snapshot },
-            engineFactory: { try EngineFactory.make($0, claudeKey: key, claudeBaseURL: options.claudeURL) },
-            dialogs: SilentDialogs(),
-            defaults: defaults)
-        model.progressObserver = { fraction, label in
-            FileHandle.standardError.write(Data("[\(Int(fraction * 100)) %] \(label)\n".utf8))
-        }
+        let claudeURL = options.claudeURL
+        // Le même code que le bouton « Compléter la sélection » (Batch.swift) ; seules la sortie choisie
+        // (qui peut être remplacée) et la conservation d'une copie incomplète (pour l'examiner) diffèrent.
+        let r = await BatchCompleter.complete(
+            url: options.input, output: options.output, settings: settings,
+            engineFactory: { try EngineFactory.make($0, claudeKey: key, claudeBaseURL: claudeURL) },
+            defaultsSuite: "fr.complete-cours.selftest", allowOverwrite: true, keepOnProblems: true,
+            progress: { fraction, label in FileHandle.standardError.write(Data("[\(Int(fraction * 100)) %] \(label)\n".utf8)) })
 
         var summary: [String: Any] = [
             "engine": options.engine.rawValue,
             "input": options.input.path,
             "output": options.output.path,
         ]
-        var problems: [String] = []
-
-        // 1. ouverture et analyse
-        await model.load(options.input)
-        guard model.document != nil else {
-            summary["ok"] = false
-            summary["error"] = model.openError ?? "Le PDF n'a pas pu être ouvert."
-            printJSON(summary)
-            return 1
-        }
-        summary["pages"] = model.pageCount
-        summary["zones"] = model.zones.count
-        summary["pagesWithZones"] = model.zonePageCount
-        summary["skippedPages"] = model.skippedPages.map { $0 + 1 }
-        summary["summary"] = model.analysisSummary
-
-        // 2. complétion, 3. écriture sur le document affiché
-        await model.complete()
-        if let problem = model.runProblem { problems.append(problem.message) }
-        model.renderAnswers()
-        summary["answered"] = model.answeredCount
-        summary["humanized"] = model.zones.filter { $0.humanized }.count
-        summary["overflow"] = model.zones.filter { $0.enabled && $0.overflow }.count
-        let zoneErrors = model.zones.filter { $0.error != nil }
-        // un même message pour plusieurs zones (panne de réseau sur une page…) n'est écrit qu'une fois
-        var byMessage: [String: Int] = [:]
-        for z in zoneErrors { byMessage[z.error ?? "", default: 0] += 1 }
-        for (message, count) in byMessage.sorted(by: { $0.key < $1.key }) {
-            problems.append("\(Fr.zones(count)) sans réponse : \(message)")
-        }
-
-        // 4. export aplati, puis relecture du résultat
-        do {
-            try await model.export(to: options.output)
-            if let out = PDFDocument(url: options.output) {
-                summary["outputOpens"] = true
-                summary["outputPages"] = out.pageCount
-                if out.pageCount != model.pageCount { problems.append("Le PDF enregistré n'a pas le même nombre de pages que l'original.") }
-                var remaining = 0
-                for i in 0..<out.pageCount { remaining += (out.page(at: i)?.annotations ?? []).filter { $0.type == "FreeText" }.count }
-                summary["outputFreeTextAnnotations"] = remaining
-            } else {
-                summary["outputOpens"] = false
-                problems.append("Le PDF enregistré ne se rouvre pas.")
+        if r.pages > 0 {
+            summary["pages"] = r.pages
+            summary["zones"] = r.zones
+            summary["pagesWithZones"] = r.pagesWithZones
+            summary["skippedPages"] = r.skippedPages
+            summary["summary"] = r.analysisSummary
+            summary["answered"] = r.answered
+            summary["humanized"] = r.humanized
+            summary["overflow"] = r.overflow
+            summary["outputOpens"] = r.outputOpens
+            if r.outputOpens {
+                summary["outputPages"] = r.outputPages
+                summary["outputFreeTextAnnotations"] = r.outputFreeText
             }
-        } catch {
-            problems.append("Enregistrement impossible : \(Fr.sentence(error.localizedDescription))")
+            summary["items"] = r.items
+            summary["problems"] = r.problems
+            summary["ok"] = r.ok
+        } else {
+            summary["ok"] = false
+            summary["error"] = r.problems.first ?? "Le PDF n'a pas pu être ouvert."
         }
-
-        summary["items"] = model.zones.map { z -> [String: Any] in
-            var item: [String: Any] = [
-                "page": z.page + 1, "number": z.number, "kind": z.kind.rawValue, "enabled": z.enabled,
-                "answer": z.answer, "humanized": z.humanized, "overflow": z.overflow,
-            ]
-            if let e = z.error { item["error"] = e }
-            return item
-        }
-        summary["problems"] = problems
-        summary["ok"] = problems.isEmpty
         printJSON(summary)
-        return problems.isEmpty ? 0 : 1
+        return summary["ok"] as? Bool == true ? 0 : 1
     }
 
     private static func parse(_ args: [String]) throws -> Options {
         guard let i = args.firstIndex(of: "--selftest") else { throw CoursError.message("Option --selftest manquante") }
         var rest = Array(args[(i + 1)...])
         guard rest.count >= 2, !rest[0].hasPrefix("--"), !rest[1].hasPrefix("--") else {
-            throw CoursError.message("Usage : --selftest <entrée.pdf> <sortie.pdf> [--engine apple|claude] [--claude-url URL] [--no-humanize]")
+            throw CoursError.message("Usage : --selftest <entrée.pdf> <sortie.pdf> [--engine apple|claude|claudeCode] [--claude-url URL] [--no-humanize]")
         }
         var options = Options(input: URL(fileURLWithPath: rest[0]), output: URL(fileURLWithPath: rest[1]))
         rest.removeFirst(2)
@@ -138,7 +96,7 @@ enum SelfTest {
                 options.humanize = false
             case "--engine":
                 guard let value = rest.first, let kind = EngineKind(rawValue: value) else {
-                    throw CoursError.message("--engine demande « apple » ou « claude »")
+                    throw CoursError.message("--engine demande « apple », « claude » ou « claudeCode » (variante personnelle)")
                 }
                 rest.removeFirst()
                 options.engine = kind

@@ -41,6 +41,7 @@ protocol RevisionExporting: Sendable {
     func summaryPDF(_ summary: RevisionSummary, documentName: String) throws -> Data
     func quizPDF(_ questions: [RevisionQuestion], documentName: String, withAnswers: Bool) throws -> Data
     func corrigePDF(_ items: [CorrigeItem], documentName: String) throws -> Data
+    func cardsPDF(_ cards: [RevisionCard], documentName: String) throws -> Data
 }
 
 @MainActor
@@ -88,15 +89,42 @@ final class AppKitRevisionDialogs: RevisionDialogs {
 // MARK: - Modèle
 
 enum RevisionTab: String, CaseIterable, Identifiable {
-    case fiche, entrainement, apres
+    case fiche, entrainement, cartes, apres
     var id: String { rawValue }
     var title: String {
         switch self {
         case .fiche: return "Fiche de synthèse"
         case .entrainement: return "Entraînement"
+        case .cartes: return "Cartes mémoire"
         case .apres: return "Après l'évaluation"
         }
     }
+    var icon: String {
+        switch self {
+        case .fiche: return "doc.text"
+        case .entrainement: return "checklist"
+        case .cartes: return "rectangle.on.rectangle.angled"
+        case .apres: return "graduationcap"
+        }
+    }
+}
+
+/// Où s'applique une consigne libre.
+enum InstructionTarget { case summary, quiz }
+
+/// Pastille de raccourci : ajoute (ou retire) une phrase dans la consigne.
+struct InstructionShortcut: Identifiable, Equatable {
+    var label: String
+    var phrase: String
+    var id: String { label }
+
+    static let all: [InstructionShortcut] = [
+        InstructionShortcut(label: "Très court", phrase: "Très court : seulement l'essentiel."),
+        InstructionShortcut(label: "Seulement les formules", phrase: "Seulement les formules."),
+        InstructionShortcut(label: "Vocabulaire à connaître", phrase: "Insiste sur le vocabulaire à connaître."),
+        InstructionShortcut(label: "Pour l'oral", phrase: "Présenté pour être appris et récité à l'oral."),
+        InstructionShortcut(label: "Plus détaillé", phrase: "Plus détaillé, avec des exemples du cours."),
+    ]
 }
 
 @MainActor
@@ -129,6 +157,19 @@ final class RevisionModel: ObservableObject {
     @Published private(set) var graded: [Int: GradedAnswer] = [:]
     @Published private(set) var showingResults = false
     @Published private(set) var round = 1
+    // Consigne libre de la fiche (celle de l'entraînement est dans `quizOptions.instruction`)
+    @Published var summaryInstruction = ""
+    // Cartes mémoire
+    @Published var cardCount = CardLimits.defaultCount
+    @Published private(set) var cards: [RevisionCard] = []
+    /// Cartes de la série en cours (toutes, ou seulement celles à revoir).
+    @Published private(set) var deck: [RevisionCard] = []
+    @Published private(set) var cardIndex = 0
+    @Published private(set) var cardFlipped = false
+    @Published private(set) var cardKnown: Set<Int> = []
+    @Published private(set) var cardToReview: Set<Int> = []
+    @Published private(set) var cardsFinished = false
+    @Published private(set) var cardRound = 1
     // Corrigé
     @Published var corrigeConfirmed = false
     @Published private(set) var corrigeItems: [CorrigeItem] = []
@@ -206,6 +247,7 @@ final class RevisionModel: ObservableObject {
         sourceHasImages = false
         summary = nil
         resetQuiz()
+        resetCards()
         corrigeItems = []
         corrigeConfirmed = false
         issue = nil
@@ -218,6 +260,7 @@ final class RevisionModel: ObservableObject {
         documentURL = nil; documentName = ""; pageCount = 0
         source = nil; summary = nil; corrigeItems = []; corrigeConfirmed = false
         resetQuiz()
+        resetCards()
         issue = nil; notice = nil
     }
 
@@ -317,16 +360,44 @@ final class RevisionModel: ObservableObject {
         return RevisionIssue(title: failure, what: Fr.sentence(error.localizedDescription), todo: "Réessaie. Si ça recommence, relance l'app.")
     }
 
+    // MARK: Consigne libre
+
+    func instruction(for target: InstructionTarget) -> String {
+        switch target { case .summary: return summaryInstruction; case .quiz: return quizOptions.instruction }
+    }
+
+    func setInstruction(_ text: String, for target: InstructionTarget) {
+        switch target { case .summary: summaryInstruction = text; case .quiz: quizOptions.instruction = text }
+    }
+
+    func isActive(_ shortcut: InstructionShortcut, for target: InstructionTarget) -> Bool {
+        instruction(for: target).contains(shortcut.phrase)
+    }
+
+    /// Un clic sur une pastille ajoute sa phrase à la consigne ; un second clic la retire.
+    func toggleShortcut(_ shortcut: InstructionShortcut, for target: InstructionTarget) {
+        var text = instruction(for: target)
+        if text.contains(shortcut.phrase) {
+            text = text.replacingOccurrences(of: shortcut.phrase, with: "")
+                .replacingOccurrences(of: " {2,}", with: " ", options: .regularExpression)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        } else {
+            text = (text.trimmingCharacters(in: .whitespacesAndNewlines) + " " + shortcut.phrase).trimmingCharacters(in: .whitespaces)
+        }
+        setInstruction(text, for: target)
+    }
+
     // MARK: Fiche
 
     func makeSummary() {
         guard canStart else { return }
+        let instruction = RevisionPrompts.cleanInstruction(summaryInstruction)
         start("Lecture du cours…", failure: "La fiche n'a pas pu être créée") { [weak self] t in
             guard let self else { return }
             let service = try self.service()
             let source = try await self.loadSource(service, withImages: false, t)
             self.report(t, 0.2, "Création de la fiche…")
-            let result = try await service.makeSummary(source, progress: self.progressHandler(t, scale: 0.2...1))
+            let result = try await service.makeSummary(source, instruction: instruction, progress: self.progressHandler(t, scale: 0.2...1))
             guard self.isCurrent(t) else { throw CancellationError() }
             self.summary = result
         }
@@ -369,7 +440,8 @@ final class RevisionModel: ObservableObject {
 
     func makeQuiz() {
         guard canStart, !quizOptions.styles.isEmpty else { return }
-        let options = quizOptions
+        var options = quizOptions
+        options.instruction = RevisionPrompts.cleanInstruction(options.instruction)
         start("Lecture du cours…", failure: "Les questions n'ont pas pu être créées") { [weak self] t in
             guard let self else { return }
             let service = try self.service()
@@ -475,6 +547,98 @@ final class RevisionModel: ObservableObject {
         save(suggested: "Questions – \(name)\(withAnswers ? " (corrigé)" : "").pdf",
              failure: "Les questions n'ont pas pu être enregistrées") {
             try exporter.quizPDF(list, documentName: name, withAnswers: withAnswers)
+        }
+    }
+
+    // MARK: Cartes mémoire
+
+    var currentCard: RevisionCard? { deck.indices.contains(cardIndex) ? deck[cardIndex] : nil }
+    var cardsToReview: [RevisionCard] { deck.filter { cardToReview.contains($0.id) } }
+    var cardsAnswered: Int { cardKnown.count + cardToReview.count }
+    var cardsScoreText: String { "\(cardKnown.count) sur \(deck.count)" }
+    /// Les boutons « Je savais » et « À revoir » ne marchent qu'une fois la carte retournée.
+    var canMarkCard: Bool { currentCard != nil && cardFlipped && !cardsFinished }
+
+    func setCardCount(_ n: Int) { cardCount = min(CardLimits.range.upperBound, max(CardLimits.range.lowerBound, n)) }
+
+    func makeCards() {
+        guard canStart else { return }
+        let count = min(CardLimits.range.upperBound, max(CardLimits.range.lowerBound, cardCount))
+        start("Lecture du cours…", failure: "Les cartes n'ont pas pu être créées") { [weak self] t in
+            guard let self else { return }
+            let service = try self.service()
+            let source = try await self.loadSource(service, withImages: false, t)
+            self.report(t, 0.2, "Création des cartes…")
+            let result = try await service.makeCards(source, count: count, progress: self.progressHandler(t, scale: 0.2...1))
+            guard self.isCurrent(t) else { throw CancellationError() }
+            guard !result.isEmpty else {
+                throw RevisionIssueError(issue: RevisionIssue(
+                    title: "Les cartes n'ont pas pu être créées",
+                    what: "L'IA n'a proposé aucune carte pour ce cours.",
+                    todo: "Réessaie dans un instant."))
+            }
+            self.cards = result
+            self.beginDeck(result)
+            self.cardRound = 1
+        }
+    }
+
+    private func beginDeck(_ list: [RevisionCard]) {
+        deck = list
+        cardIndex = 0
+        cardFlipped = false
+        cardKnown = []
+        cardToReview = []
+        cardsFinished = false
+    }
+
+    private func resetCards() {
+        cards = []; deck = []; cardIndex = 0; cardFlipped = false
+        cardKnown = []; cardToReview = []; cardsFinished = false; cardRound = 1
+    }
+
+    func flipCard() {
+        guard currentCard != nil, !cardsFinished else { return }
+        cardFlipped.toggle()
+    }
+
+    /// « Je savais » (`known`) ou « À revoir » ; passe à la carte suivante, ou termine la série.
+    func markCard(known: Bool) {
+        guard canMarkCard, let card = currentCard else { return }
+        if known { cardKnown.insert(card.id); cardToReview.remove(card.id) }
+        else { cardToReview.insert(card.id); cardKnown.remove(card.id) }
+        if cardIndex + 1 < deck.count {
+            cardIndex += 1
+            cardFlipped = false
+        } else {
+            cardsFinished = true
+            cardFlipped = false
+        }
+    }
+
+    /// Rejoue seulement les cartes à revoir.
+    func replayCardsToReview() {
+        let list = cardsToReview
+        guard !list.isEmpty else { return }
+        beginDeck(list)
+        cardRound += 1
+    }
+
+    /// Rejoue tout le paquet depuis le début.
+    func restartCards() {
+        guard !cards.isEmpty else { return }
+        beginDeck(cards)
+        cardRound = 1
+    }
+
+    /// Retour au réglage du nombre de cartes (nouvelles cartes).
+    func newCards() { guard !isBusy else { return }; resetCards() }
+
+    func exportCardsPDF() {
+        guard !cards.isEmpty else { return }
+        let exporter = exporter, name = documentName, list = cards
+        save(suggested: "Cartes – \(name).pdf", failure: "Les cartes n'ont pas pu être enregistrées") {
+            try exporter.cardsPDF(list, documentName: name)
         }
     }
 

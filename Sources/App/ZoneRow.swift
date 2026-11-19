@@ -37,19 +37,43 @@ struct ZoneRow: View {
                 }
             }
         }
-        .padding(10)
-        .background(isSelected ? Color.accentColor.opacity(0.12) : Color.secondary.opacity(0.06),
-                    in: RoundedRectangle(cornerRadius: 10))
-        .overlay(RoundedRectangle(cornerRadius: 10)
-            .strokeBorder(isSelected ? Color.accentColor.opacity(0.8) : Color.clear, lineWidth: 1.5))
-        .contentShape(RoundedRectangle(cornerRadius: 10))
+        .card(selected: isSelected, padding: 12)
+        .contentShape(RoundedRectangle(cornerRadius: 12))
         .onTapGesture { model.select(zone.id, from: .list) }
         .onAppear { draft = zone.answer }
         .onChange(of: zone.answer) { _, new in if new != draft { draft = new } }
         .onChange(of: draft) { _, new in if new != zone.answer { model.setAnswer(new, for: zone.id) } }
         .onChange(of: focused) { _, now in if now { model.select(zone.id, from: .list) } }
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("Zone \(zone.number), page \(zone.page + 1)")
+        .accessibilityLabel("Zone \(zone.number), page \(zone.page + 1), \(zone.kind.label), \(stateText)")
+    }
+
+    // MARK: État et couleur par type
+
+    private var kindColor: Color {
+        if isIgnored || !zone.enabled { return .gray }
+        switch zone.kind {
+        case .mot: return .blue
+        case .definition: return .purple
+        case .question: return .orange
+        case .ignorer: return .gray
+        }
+    }
+
+    private var stateText: String {
+        if isIgnored { return "ignorée" }
+        if zone.error != nil { return "erreur" }
+        return hasAnswer ? "répondue" : "vide"
+    }
+
+    private var stateTag: some View {
+        Group {
+            if isThisRunning { Tag(text: "En cours", color: .accentColor) }
+            else if isIgnored { Tag(text: "Ignorée", color: .gray) }
+            else if zone.error != nil { Tag(text: "Erreur", color: .red) }
+            else if hasAnswer { Tag(text: "Répondue", color: .green) }
+            else { Tag(text: "Vide", color: .secondary) }
+        }
     }
 
     // MARK: Parties
@@ -59,7 +83,7 @@ struct ZoneRow: View {
             .font(.callout.weight(.bold).monospacedDigit())
             .foregroundStyle(.white)
             .frame(minWidth: 26, minHeight: 26)
-            .background(Circle().fill(isIgnored || !zone.enabled ? Color.gray : (isSelected ? Color.orange : Color.accentColor)))
+            .background(Circle().fill(kindColor))
             .accessibilityHidden(true)
     }
 
@@ -71,7 +95,9 @@ struct ZoneRow: View {
             .labelsHidden()
             .pickerStyle(.menu)
             .fixedSize()
+            .tint(kindColor)
             .disabled(model.isRunning)
+            stateTag
             Spacer(minLength: 4)
             if isThisRunning {
                 ProgressView().controlSize(.small)
@@ -89,7 +115,12 @@ struct ZoneRow: View {
         TextField(isManual ? "Écris la réponse, ou clique sur « Compléter cette zone »" : "Réponse",
                   text: $draft, axis: .vertical)
             .lineLimit(1...6)
-            .textFieldStyle(.roundedBorder)
+            .textFieldStyle(.plain)
+            .padding(8)
+            .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8)
+                .strokeBorder(focused ? Color.accentColor : (zone.error != nil ? Color.red.opacity(0.6) : kindColor.opacity(0.45)),
+                              lineWidth: focused ? 2 : 1))
             .focused($focused)
             .disabled(model.isRunning)
             .accessibilityLabel("Réponse de la zone \(zone.number)")

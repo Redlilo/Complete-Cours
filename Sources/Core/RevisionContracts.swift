@@ -65,6 +65,8 @@ enum QuestionStyle: String, Codable, CaseIterable, Identifiable {
 struct QuizOptions {
     var count = 10
     var styles: Set<QuestionStyle> = [.qcm, .courte, .definition]
+    /// Consigne libre de l'élève (facultative) : une préférence de mise en forme, jamais une règle.
+    var instruction = ""
 }
 
 struct RevisionQuestion: Identifiable, Codable, Equatable {
@@ -105,6 +107,23 @@ struct RevisionSummary: Codable, Equatable {
     var tips: [String]              // pièges et conseils pour retenir
 }
 
+// MARK: - Cartes mémoire
+
+/// Une carte recto/verso : une question ou un mot au recto, la réponse au verso.
+struct RevisionCard: Identifiable, Codable, Equatable {
+    var id: Int
+    var front: String
+    var back: String
+    var page: Int?                  // page du cours concernée (1 = première), si connue
+}
+
+enum CardLimits {
+    static let range = 5...30
+    static let defaultCount = 12
+    /// Cartes par feuille imprimée (2 colonnes × 4 lignes).
+    static let perSheet = 8
+}
+
 // MARK: - Corrigé d'une évaluation déjà rendue
 
 struct CorrigeItem: Identifiable, Codable, Equatable {
@@ -125,12 +144,21 @@ struct CorrigeItem: Identifiable, Codable, Equatable {
 protocol RevisionProviding: AnyObject {
     /// Lit le document : texte de chaque page et, si `withImages`, un rendu JPEG de chaque page.
     func loadSource(url: URL, withImages: Bool, progress: @escaping RevisionProgress) async throws -> RevisionSource
-    func makeSummary(_ source: RevisionSource, progress: @escaping RevisionProgress) async throws -> RevisionSummary
+    /// `instruction` : consigne libre de l'élève (peut être vide), traitée comme une préférence de mise en forme.
+    func makeSummary(_ source: RevisionSource, instruction: String, progress: @escaping RevisionProgress) async throws -> RevisionSummary
     func makeQuiz(_ source: RevisionSource, options: QuizOptions, progress: @escaping RevisionProgress) async throws -> [RevisionQuestion]
+    /// Cartes mémoire recto/verso à partir du cours (`count` cartes au plus).
+    func makeCards(_ source: RevisionSource, count: Int, progress: @escaping RevisionProgress) async throws -> [RevisionCard]
     /// Corrige un lot de réponses de l'élève ; renvoie un verdict par question, dans le même ordre.
     func grade(_ answers: [(question: RevisionQuestion, answer: String)]) async throws -> [GradedAnswer]
     /// À partir d'une évaluation déjà rendue (réponses de l'élève et remarques du professeur visibles sur les pages).
     func makeCorrige(_ source: RevisionSource, progress: @escaping RevisionProgress) async throws -> [CorrigeItem]
+}
+
+extension RevisionProviding {
+    func makeSummary(_ source: RevisionSource, progress: @escaping RevisionProgress) async throws -> RevisionSummary {
+        try await makeSummary(source, instruction: "", progress: progress)
+    }
 }
 
 // Les exports vers de NOUVEAUX PDF sont fournis par l'agent « revision-core » dans RevisionExport.swift,
@@ -140,4 +168,5 @@ protocol RevisionProviding: AnyObject {
 //       static func summaryPDF(_ summary: RevisionSummary, documentName: String) throws -> Data
 //       static func quizPDF(_ questions: [RevisionQuestion], documentName: String, withAnswers: Bool) throws -> Data
 //       static func corrigePDF(_ items: [CorrigeItem], documentName: String) throws -> Data
+//       static func cardsPDF(_ cards: [RevisionCard], documentName: String) throws -> Data
 //   }

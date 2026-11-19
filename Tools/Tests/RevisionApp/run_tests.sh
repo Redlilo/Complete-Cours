@@ -7,6 +7,6 @@ SORTIE="${REVISION_OUT:-$RACINE/build/revision-app}"
 mkdir -p "$SORTIE"
 APP="$RACINE/Sources/App"
 swiftc -O -swift-version 5 -target arm64-apple-macos26.0 \
-    "$RACINE"/Sources/Core/*.swift "$APP/Format.swift" "$APP/RevisionModel.swift" "$APP/RevisionFake.swift" "$APP/RevisionView.swift" \
+    "$RACINE"/Sources/Core/*.swift "$APP/Format.swift" "$APP/RevisionModel.swift" "$APP/RevisionFake.swift" "$APP/RevisionView.swift" "$APP/RevisionCardsView.swift" "$APP/Style.swift" \
     "$RACINE/Tools/Tests/RevisionApp/main.swift" -o "$SORTIE/revision-app-tests"
 "$SORTIE/revision-app-tests" "$SORTIE"

@@ -106,4 +106,31 @@ if let first = try? CourseAnalysis.move(AnalysisSuggestion(path: "Atelier/a.pdf"
 } else { check(false, "le déplacement fonctionne") }
 try? FileManager.default.removeItem(at: tmp)
 
+// Originaux vides : paires détectées par le nom, destination en miroir, jamais d'écrasement
+check(OriginalsArchive.completedBase("SEANCE 4 (complétée)") == "seance 4", "(complétée)")
+check(OriginalsArchive.completedBase("SEANCE 4 (complétée 2)") == "seance 4", "(complétée 2)")
+check(OriginalsArchive.completedBase("Scan2026-11-16_115411_complete") == "scan2026-11-16 115411", "_complete")
+check(OriginalsArchive.completedBase("3 - TP LAN (Packet Tracer) - rempli") == "3 - tp lan (packet tracer)", "- rempli")
+check(OriginalsArchive.completedBase("Séance 1 - Origine") == nil, "un cours vierge n'est pas une version complétée")
+let arch = FileManager.default.temporaryDirectory.appendingPathComponent("archive-\(getpid())")
+func touch(_ rel: String) { let u = arch.appendingPathComponent(rel); try? FileManager.default.createDirectory(at: u.deletingLastPathComponent(), withIntermediateDirectories: true); FileManager.default.createFile(atPath: u.path, contents: Data(rel.utf8)) }
+touch("Histoire/Thème 1/SEANCE 4.pdf"); touch("Histoire/Thème 1/SEANCE 4 (complétée).pdf"); touch("Histoire/Thème 1/Séance 1.pdf")
+touch("Maths/Contrôle 1.pdf"); touch("Maths/Contrôle 1 corrigé.pdf")
+let archFiles = LibraryTree.scan(arch)
+let archLedger = CourseLedger(directory: arch.appendingPathComponent(".journal"))
+let archPlans = OriginalsArchive.plan(files: archFiles, root: arch)
+check(archPlans.count == 1 && archPlans[0].original.lastPathComponent == "SEANCE 4.pdf", "une seule paire (la évaluation est ignorée) : \(archPlans.map { $0.original.lastPathComponent })")
+if let p = archPlans.first {
+    check(p.destination.path.hasSuffix("_Originaux avant completion/Histoire/Thème 1/SEANCE 4.pdf"), "destination en miroir : \(p.destination.path)")
+    touch("_Originaux avant completion/Histoire/Thème 1/SEANCE 4.pdf")
+    if let rec = try? OriginalsArchive.archive(p, ledger: archLedger) {
+        check(rec.toURL.lastPathComponent == "SEANCE 4 (2).pdf", "jamais d'écrasement : \(rec.toURL.lastPathComponent)")
+        check(!FileManager.default.fileExists(atPath: p.original.path) && FileManager.default.fileExists(atPath: p.completed.path), "l'original part, la version complétée reste")
+        if case .restored = archLedger.undo(rec.id) { check(FileManager.default.fileExists(atPath: p.original.path), "annulation : l'original revient") } else { check(false, "annulation possible") }
+    } else { check(false, "le rangement fonctionne") }
+    try? FileManager.default.removeItem(at: p.completed)
+    check((try? OriginalsArchive.archive(p, ledger: archLedger)) == nil, "refuse si la version complétée a disparu")
+}
+try? FileManager.default.removeItem(at: arch)
+
 if failures == 0 { print("Library : tout est bon.") } else { print("Library : \(failures) échec(s)."); exit(1) }

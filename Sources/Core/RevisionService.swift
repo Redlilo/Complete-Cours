@@ -159,7 +159,7 @@ final class RevisionService: RevisionProviding, @unchecked Sendable {
 
     // MARK: - Fiche de synthèse
 
-    func makeSummary(_ source: RevisionSource, progress: @escaping RevisionProgress) async throws -> RevisionSummary {
+    func makeSummary(_ source: RevisionSource, instruction: String, progress: @escaping RevisionProgress) async throws -> RevisionSummary {
         let p = RevMonotone(progress)
         resetWarnings()
         try ensureReadable(source)
@@ -168,40 +168,40 @@ final class RevisionService: RevisionProviding, @unchecked Sendable {
 
         if batches.count == 1 {
             p(0.1, "Je fabrique la fiche de synthèse…")
-            let s = try await summarize(source, batches[0], part: nil)
+            let s = try await summarize(source, batches[0], part: nil, instruction: instruction)
             p(1, "Fiche terminée.")
             return Self.limited(s, fallbackTitle: source.documentName)
         }
 
         let partials = try await processBatches(batches, progress: p, from: 0.05, to: 0.8,
                                                 message: { i, n, b in "Je résume les pages \(Self.range(b)) (lot \(i) sur \(n))…" }) { i, b in
-            try await self.summarize(source, b, part: (i, batches.count))
+            try await self.summarize(source, b, part: (i, batches.count), instruction: instruction)
         }
         p(0.85, "Je fusionne les fiches partielles…")
         let merged: RevisionSummary
         if partials.count == 1 {
             merged = partials[0]
         } else {
-            merged = try await mergeOrFallback(source, partials)
+            merged = try await mergeOrFallback(source, partials, instruction: instruction)
         }
         p(1, "Fiche terminée.")
         return Self.limited(merged, fallbackTitle: source.documentName)
     }
 
-    private func summarize(_ source: RevisionSource, _ pages: [RevisionPage], part: (Int, Int)?) async throws -> RevisionSummary {
+    private func summarize(_ source: RevisionSource, _ pages: [RevisionPage], part: (Int, Int)?, instruction: String) async throws -> RevisionSummary {
         let (images, numbers) = imagePlan(pages, all: false)
-        let user = RevisionPrompts.summaryUser(documentName: source.documentName, pages: pages, imageNumbers: numbers, part: part)
+        let user = RevisionPrompts.summaryUser(documentName: source.documentName, pages: pages, imageNumbers: numbers, part: part, instruction: instruction)
         return try await ask(system: RevisionPrompts.summarySystem, user: user, images: images,
                              schema: RevisionPrompts.summarySchema) { try Self.parseSummary($0, fallbackTitle: source.documentName) }
     }
 
     /// Fusion en un appel ; si l'appel échoue sans être fatal, fusion locale. Une erreur fatale ou une annulation remonte.
-    private func mergeOrFallback(_ source: RevisionSource, _ partials: [RevisionSummary]) async throws -> RevisionSummary {
+    private func mergeOrFallback(_ source: RevisionSource, _ partials: [RevisionSummary], instruction: String) async throws -> RevisionSummary {
         let enc = JSONEncoder()
         let texts = partials.compactMap { (try? enc.encode($0)).flatMap { String(data: $0, encoding: .utf8) } }
         do {
             return try await ask(system: RevisionPrompts.mergeSystem,
-                                 user: RevisionPrompts.mergeUser(documentName: source.documentName, partials: texts),
+                                 user: RevisionPrompts.mergeUser(documentName: source.documentName, partials: texts, instruction: instruction),
                                  images: [], schema: RevisionPrompts.summarySchema) { try Self.parseSummary($0, fallbackTitle: source.documentName) }
         } catch {
             if Self.isCancellation(error) { throw CancellationError() }
@@ -270,7 +270,7 @@ final class RevisionService: RevisionProviding, @unchecked Sendable {
             let n = merged.count
             let mine = stride(from: i - 1, to: count, by: n).map { sequence[$0] }
             let plan = usable.map { st in (st, mine.filter { $0 == st }.count) }.filter { $0.1 > 0 }
-            return try await self.quizBatch(source, b, plan: plan, wanted: mine.count)
+            return try await self.quizBatch(source, b, plan: plan, wanted: mine.count, instruction: options.instruction)
         }
 
         var all = results.flatMap { $0 }
@@ -289,9 +289,9 @@ final class RevisionService: RevisionProviding, @unchecked Sendable {
         return stride(from: 0, to: pages.count, by: max(1, size)).map { Array(pages[$0..<min(pages.count, $0 + size)]) }
     }
 
-    private func quizBatch(_ source: RevisionSource, _ pages: [RevisionPage], plan: [(QuestionStyle, Int)], wanted: Int) async throws -> [RevisionQuestion] {
+    private func quizBatch(_ source: RevisionSource, _ pages: [RevisionPage], plan: [(QuestionStyle, Int)], wanted: Int, instruction: String) async throws -> [RevisionQuestion] {
         let (images, numbers) = imagePlan(pages, all: false)
-        let user = RevisionPrompts.quizUser(documentName: source.documentName, pages: pages, imageNumbers: numbers, plan: plan)
+        let user = RevisionPrompts.quizUser(documentName: source.documentName, pages: pages, imageNumbers: numbers, plan: plan, instruction: instruction)
         let pageCount = source.pageCount
         let shuffle = shuffleChoices
         return try await ask(system: RevisionPrompts.quizSystem, user: user, images: images,
@@ -349,6 +349,61 @@ final class RevisionService: RevisionProviding, @unchecked Sendable {
         }
         return RevisionQuestion(id: 0, style: style, question: question, choices: choices,
                                 expected: expected, explanation: explanation, page: pg)
+    }
+
+    // MARK: - Cartes mémoire
+
+    func makeCards(_ source: RevisionSource, count requested: Int, progress: @escaping RevisionProgress) async throws -> [RevisionCard] {
+        let p = RevMonotone(progress)
+        resetWarnings()
+        try ensureReadable(source)
+        let count = min(CardLimits.range.upperBound, max(CardLimits.range.lowerBound, requested))
+        let batchesAll = makeBatches(source.pages, maxCost: 24_000, maxPages: 12)
+        // pas plus de lots que de cartes demandées
+        let batches = batchesAll.count > count ? regroup(batchesAll, into: count) : batchesAll
+        let n = batches.count
+        // part de chaque lot : le reste est réparti sur les premiers lots
+        let shares = (0..<n).map { count / n + ($0 < count % n ? 1 : 0) }
+        p(0.02, "Je prépare les cartes…")
+
+        let results = try await processBatches(batches, progress: p, from: 0.05, to: 0.97,
+                                               message: { i, n, b in
+            n == 1 ? "Je fabrique les cartes…" : "Je fabrique les cartes des pages \(Self.range(b)) (lot \(i) sur \(n))…"
+        }) { i, b in
+            try await self.cardsBatch(source, b, wanted: shares[i - 1])
+        }
+
+        // sans doublons (même recto), dans l'ordre du cours, au plus `count`
+        var seen = Set<String>(), all: [RevisionCard] = []
+        for c in results.flatMap({ $0 }) where seen.insert(Self.normalize(c.front)).inserted { all.append(c) }
+        if all.count > count { all = Array(all.prefix(count)) }
+        guard !all.isEmpty else {
+            throw EngineError.invalidResponse("L'IA n'a pas pu fabriquer de cartes exploitables avec ce document. Réessaie dans un instant.")
+        }
+        for i in all.indices { all[i].id = i + 1 }
+        p(1, "Cartes prêtes.")
+        return all
+    }
+
+    private func cardsBatch(_ source: RevisionSource, _ pages: [RevisionPage], wanted: Int) async throws -> [RevisionCard] {
+        let (images, numbers) = imagePlan(pages, all: false)
+        let user = RevisionPrompts.cardsUser(documentName: source.documentName, pages: pages, imageNumbers: numbers, wanted: wanted)
+        let pageCount = source.pageCount
+        return try await ask(system: RevisionPrompts.cardsSystem, user: user, images: images,
+                             schema: RevisionPrompts.cardsSchema) { root in
+            if let d = root as? [String: Any], d["cartes"] == nil { throw RevBadFormat(detail: "champ cartes absent") }
+            let cards = RevJSON.list(root, "cartes").compactMap { Self.parseCard($0, pageCount: pageCount) }
+            if cards.isEmpty { throw RevBadFormat(detail: "aucune carte valide") }
+            return Array(cards.prefix(wanted))
+        }
+    }
+
+    /// Valide une carte : recto et verso non vides (sinon nil) ; textes limités en longueur.
+    static func parseCard(_ d: [String: Any], pageCount: Int) -> RevisionCard? {
+        let front = String(RevJSON.str(d["recto"]).prefix(300)), back = String(RevJSON.str(d["verso"]).prefix(600))
+        guard !front.isEmpty, !back.isEmpty, normalize(front) != normalize(back) else { return nil }
+        let pg = RevJSON.int(d["page"]).flatMap { $0 >= 1 && $0 <= pageCount ? $0 : nil }
+        return RevisionCard(id: 0, front: front, back: back, page: pg)
     }
 
     // MARK: - Correction des réponses de l'élève

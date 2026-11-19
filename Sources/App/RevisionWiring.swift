@@ -12,6 +12,9 @@ struct LiveRevisionExporter: RevisionExporting {
     func corrigePDF(_ items: [CorrigeItem], documentName: String) throws -> Data {
         try RevisionExport.corrigePDF(items, documentName: documentName)
     }
+    func cardsPDF(_ cards: [RevisionCard], documentName: String) throws -> Data {
+        try RevisionExport.cardsPDF(cards, documentName: documentName)
+    }
 }
 
 extension RevisionModel {

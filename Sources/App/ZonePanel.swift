@@ -37,15 +37,27 @@ struct ZonePanel: View {
     // MARK: En-tête
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline) {
-                Text("Zones à remplir").font(.headline)
+                Text("Zones à remplir").font(.system(size: 20, weight: .bold, design: .rounded))
                 Spacer()
                 if model.isReady, model.zonesToFill > 0 {
-                    Text("\(model.answeredCount) sur \(model.zonesToFill) remplies")
-                        .font(.callout).foregroundStyle(.secondary)
+                    Text("\(model.answeredCount) / \(model.zonesToFill)")
+                        .font(.callout.weight(.semibold).monospacedDigit())
+                        .foregroundStyle(model.answeredCount == model.zonesToFill ? Color.green : Color.accentColor)
+                        .padding(.horizontal, 9).padding(.vertical, 2)
+                        .background((model.answeredCount == model.zonesToFill ? Color.green : Color.accentColor).opacity(0.14), in: Capsule())
                         .accessibilityLabel("\(Fr.answers(model.answeredCount)) sur \(model.zonesToFill)")
                 }
+            }
+            if model.isReady, model.zonesToFill > 0 {
+                ProgressView(value: Double(model.answeredCount), total: Double(max(model.zonesToFill, 1)))
+                    .tint(model.answeredCount == model.zonesToFill ? .green : .accentColor)
+                    .accessibilityHidden(true)
+                Text(model.answeredCount == model.zonesToFill
+                     ? "Tout est rempli : relis, puis enregistre le PDF."
+                     : "\(model.zonesToFill - model.answeredCount) zone(s) encore vide(s).")
+                    .font(.caption).foregroundStyle(.secondary)
             }
             Label {
                 Text("Les textes à trous et les définitions restent exacts. Seules les questions ouvertes peuvent être humanisées.")
@@ -56,7 +68,8 @@ struct ZonePanel: View {
             .font(.caption)
             .foregroundStyle(.secondary)
         }
-        .padding(.horizontal, 14).padding(.vertical, 10)
+        .padding(.horizontal, 14).padding(.vertical, 12)
+        .background(LinearGradient(colors: [Color.accentColor.opacity(0.08), .clear], startPoint: .topLeading, endPoint: .bottomTrailing))
     }
 
     // MARK: Messages (moteur, progression, erreurs)
@@ -112,7 +125,7 @@ struct ZonePanel: View {
                 Text("Page \(page + 1) sur \(model.pageCount)")
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(.secondary)
-                    .padding(.top, 6)
+                    .padding(.top, 8).padding(.leading, 2)
                     .accessibilityAddTraits(.isHeader)
                 ForEach(model.zones.filter { $0.page == page }) { zone in
                     ZoneRow(zone: zone).id(zone.id)
@@ -138,6 +151,7 @@ struct ZonePanel: View {
                 }
                 .controlSize(.large)
                 .buttonStyle(.borderedProminent)
+                .font(.headline)
                 .disabled(!model.canComplete)
                 .help("Écrire les réponses avec \(RunSettings.current().engineDisplayName)")
             }
@@ -166,17 +180,27 @@ struct EmptyZonesView: View {
     @EnvironmentObject var model: CoursModel
 
     var body: some View {
-        VStack(spacing: 10) {
-            Image(systemName: "text.magnifyingglass")
-                .font(.system(size: 34, weight: .light))
-                .foregroundStyle(.secondary)
+        VStack(spacing: 12) {
+            ZStack {
+                Circle().fill(Color.secondary.opacity(0.12)).frame(width: 72, height: 72)
+                Image(systemName: "text.magnifyingglass")
+                    .font(.system(size: 30, weight: .light))
+                    .foregroundStyle(.secondary)
+            }
+            .accessibilityHidden(true)
             Text(model.analysisSummary)
                 .font(.headline)
+                .multilineTextAlignment(.center)
             if model.canDrawZone {
                 Text("Ce PDF n'a pas de trou que Complète-Cours reconnaît. Tu peux ajouter une zone à la main : clique sur « Ajouter une zone », puis tire un rectangle autour de l'endroit à remplir.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+                Button { model.beginDrawingZone() } label: {
+                    Label("Ajouter une zone", systemImage: "rectangle.dashed.badge.record")
+                }
+                .buttonStyle(.bordered)
             }
         }
         .frame(maxWidth: .infinity)
@@ -201,7 +225,8 @@ struct RunProgressCard: View {
             }
         }
         .padding(12)
-        .background(Color.accentColor.opacity(0.10), in: RoundedRectangle(cornerRadius: 10))
+        .background(Color.accentColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color.accentColor.opacity(0.35)))
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Traitement en cours : \(progress.label)")
     }
@@ -255,7 +280,8 @@ struct Banner<Actions: View>: View {
             }
         }
         .padding(12)
-        .background(color.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
+        .background(color.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(color.opacity(0.35)))
         .accessibilityElement(children: .contain)
     }
 }

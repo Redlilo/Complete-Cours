@@ -783,6 +783,10 @@ final class CoursModel: ObservableObject {
                                       flatten: settings.flatten, to: destination)
         }.value
         hasUnsavedChanges = false
+        // une copie enregistrée à côté de l'original est une complétion faite par l'app : on s'en souvient
+        if destination.deletingLastPathComponent().standardizedFileURL == source.deletingLastPathComponent().standardizedFileURL {
+            CourseLedger.shared.recordCompletion(original: source, copy: destination, engine: settings.engineDisplayName)
+        }
     }
 
     // MARK: - Messages

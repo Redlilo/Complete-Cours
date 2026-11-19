@@ -8,6 +8,10 @@ final class FakeRevisionService: RevisionProviding {
     var failNext: Error?
     private(set) var calls: [String] = []
     private(set) var lastLoadWithImages: Bool?
+    /// Dernière consigne reçue pour la fiche, dernier nombre de cartes demandé.
+    private(set) var lastSummaryInstruction: String?
+    private(set) var lastQuizInstruction: String?
+    private(set) var lastCardCount: Int?
 
     private func step(_ name: String, _ progress: RevisionProgress?, _ label: String) async throws {
         calls.append(name)
@@ -25,7 +29,8 @@ final class FakeRevisionService: RevisionProviding {
         return RevisionSource(url: url, documentName: url.deletingPathExtension().lastPathComponent, pages: pages)
     }
 
-    func makeSummary(_ source: RevisionSource, progress: @escaping RevisionProgress) async throws -> RevisionSummary {
+    func makeSummary(_ source: RevisionSource, instruction: String, progress: @escaping RevisionProgress) async throws -> RevisionSummary {
+        lastSummaryInstruction = instruction
         try await step("makeSummary", progress, "Création de la fiche…")
         return RevisionSummary(
             title: "La loi d'Ohm",
@@ -47,8 +52,23 @@ final class FakeRevisionService: RevisionProviding {
     ]
 
     func makeQuiz(_ source: RevisionSource, options: QuizOptions, progress: @escaping RevisionProgress) async throws -> [RevisionQuestion] {
+        lastQuizInstruction = options.instruction
         try await step("makeQuiz", progress, "Création des questions…")
         return Array(Self.questions.filter { options.styles.contains($0.style) }.prefix(options.count))
+    }
+
+    static let cards: [RevisionCard] = [
+        RevisionCard(id: 1, front: "Unité de la résistance ?", back: "L'ohm (Ω).", page: 1),
+        RevisionCard(id: 2, front: "Loi d'Ohm", back: "U = R × I (U en volts, R en ohms, I en ampères).", page: 2),
+        RevisionCard(id: 3, front: "Quel appareil mesure la tension ?", back: "Le voltmètre, branché en dérivation.", page: 2),
+        RevisionCard(id: 4, front: "Unité de l'intensité ?", back: "L'ampère (A).", page: 3),
+        RevisionCard(id: 5, front: "Que mesure un ampèremètre ?", back: "L'intensité du courant, branché en série.", page: 3),
+    ]
+
+    func makeCards(_ source: RevisionSource, count: Int, progress: @escaping RevisionProgress) async throws -> [RevisionCard] {
+        lastCardCount = count
+        try await step("makeCards", progress, "Création des cartes…")
+        return Array(Self.cards.prefix(count))
     }
 
     /// Juste si la réponse contient le premier mot de la bonne réponse, partielle si elle n'est pas vide mais fausse
@@ -93,4 +113,5 @@ extension FakeRevisionExporter: RevisionExporting {
         try data("quiz \(questions.count) \(withAnswers ? "avec" : "sans")")
     }
     func corrigePDF(_ items: [CorrigeItem], documentName: String) throws -> Data { try data("corrige \(items.count)") }
+    func cardsPDF(_ cards: [RevisionCard], documentName: String) throws -> Data { try data("cartes \(cards.count)") }
 }

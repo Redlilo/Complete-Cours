@@ -130,7 +130,11 @@ struct LibraryView: View {
     @ObservedObject private var library = LibraryModel.shared
     @ObservedObject private var intake = IntakeModel.shared
     @State private var search = ""
+    @State private var showArchive = false
+    @AppStorage("archiveOriginals") private var archiveAuto = true
     @State private var showAnalysis = false
+    @State private var showHistory = false
+    @ObservedObject private var history = MoveHistory.shared
     @State private var dropTargeted = false
 
     private var rows: [LibraryRow] {
@@ -140,6 +144,7 @@ struct LibraryView: View {
     var body: some View {
         VStack(spacing: 0) {
             header
+            if let b = history.banner { MoveBanner(count: b.count).padding(.horizontal, 20).padding(.bottom, 8) }
             if let notice = intake.notice { intakeBanner(notice) }
             if let problem = library.problem, library.files.isEmpty {
                 VStack(spacing: 12) {
@@ -159,6 +164,8 @@ struct LibraryView: View {
         .background(Color(nsColor: .windowBackgroundColor))
         .onAppear { if library.files.isEmpty { library.refresh() } }
         .sheet(isPresented: $showAnalysis) { AnalysisSheet() }
+        .sheet(isPresented: $showHistory) { MoveHistorySheet() }
+        .sheet(isPresented: $showArchive) { ArchiveSheet() }
         .overlay { if dropTargeted { RoundedRectangle(cornerRadius: 14).strokeBorder(Color.accentColor, style: StrokeStyle(lineWidth: 3, dash: [10, 6])).padding(6).allowsHitTesting(false) } }
         .onDrop(of: [.fileURL], isTargeted: $dropTargeted) { providers in
             DropLoader.urls(from: providers) { urls in IntakeModel.shared.handle(urls) }
@@ -238,6 +245,9 @@ struct LibraryView: View {
                 Button("Tout déplier") { withAnimation(.snappy(duration: 0.15)) { library.expandAll() } }.disabled(!search.isEmpty)
                 Button("Tout replier") { withAnimation(.snappy(duration: 0.15)) { library.collapseAll() } }.disabled(!search.isEmpty)
                 Divider()
+                Button("Ranger les originaux vides…") { showArchive = true }
+                Toggle("Ranger l'original après chaque complétion", isOn: $archiveAuto)
+                Button("Historique des rangements…") { showHistory = true }
                 Button("Actualiser") { library.refresh() }
                 Button("Changer le dossier des cours…") { library.chooseRoot() }
             } label: { Image(systemName: "ellipsis.circle") }
@@ -289,6 +299,16 @@ private struct FolderRowView: View {
     }
 }
 
+/// Étiquettes d'état : « Évaluation », « Complété par l'app » (copie faite par l'app, d'après le journal) ou l'état lu dans le nom.
+private struct StateTags: View {
+    let file: LibraryFile
+    var body: some View {
+        if file.isEvaluation { Tag(text: "Évaluation", color: .orange) }
+        if CourseLedger.shared.isAppCopy(file.url) { Tag(text: "Complété par l'app", color: .green) }
+        else if let label = file.state.label { Tag(text: label, color: .secondary) }
+    }
+}
+
 /// Un PDF : vignette, nom, étiquettes ; les actions apparaissent au survol ou à la sélection.
 private struct FileRowView: View {
     let file: LibraryFile
@@ -305,8 +325,7 @@ private struct FileRowView: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text(file.name).font(.subheadline).lineLimit(2)
                 HStack(spacing: 5) {
-                    if file.isEvaluation { Tag(text: "Évaluation", color: .orange) }
-                    if let label = file.state.label { Tag(text: label, color: .secondary) }
+                    StateTags(file: file)
                 }
             }
             Spacer(minLength: 4)
@@ -358,8 +377,7 @@ private struct DocumentPreview: View {
                 Text(file.name).font(.headline).lineLimit(2)
                 Text(file.folders.joined(separator: " › ")).font(.caption).foregroundStyle(.secondary)
                 HStack(spacing: 6) {
-                    if file.isEvaluation { Tag(text: "Évaluation", color: .orange) }
-                    if let label = file.state.label { Tag(text: label, color: .secondary) }
+                    StateTags(file: file)
                     Spacer()
                     if file.isEvaluation {
                         Button("Corriger") { navigator.correct(file.url) }.buttonStyle(.borderedProminent)

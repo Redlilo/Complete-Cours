@@ -7,7 +7,7 @@ import AppKit
 // Seuls le nom et un court extrait de la première page partent vers l'IA ; les évaluations ne sont jamais lues
 // (leur nom seul sert à les ranger).
 
-struct CourseDigest {
+struct CourseDigest: Equatable {
     var path: String            // chemin relatif au dossier des cours
     var isEvaluation: Bool
     var excerpt: String         // début de la page 1 (vide pour une évaluation)
@@ -26,6 +26,13 @@ struct AnalysisSuggestion: Identifiable, Equatable {
 
 enum CourseAnalysis {
     // MARK: Lecture locale
+
+    /// Résumé d'un fichier, relu seulement s'il est nouveau ou modifié (taille ou date) depuis le journal.
+    /// `force` : relit tout. `fromCache` dit si la lecture a été évitée.
+    static func digest(_ file: LibraryFile, ledger: CourseLedger?, force: Bool = false) -> (digest: CourseDigest, fromCache: Bool) {
+        if !force, let ledger, let hit = ledger.cachedDigest(for: file.url, relativePath: file.relativePath) { return (hit, true) }
+        return (digest(file), false)
+    }
 
     static func digest(_ file: LibraryFile) -> CourseDigest {
         var d = CourseDigest(path: file.relativePath, isEvaluation: file.isEvaluation, excerpt: "")
@@ -126,16 +133,26 @@ enum CourseAnalysis {
     }
 
     /// Une série de demandes (16 fichiers à la fois). `progress` reçoit la part faite, de 0 à 1.
+    /// Avec un `ledger`, une demande déjà faite (mêmes extraits, mêmes dossiers) reprend la réponse gardée au lieu de rappeler l'IA.
     static func suggest(digests: [CourseDigest], folders: [String], generator: StructuredGenerator,
+                        ledger: CourseLedger? = nil, useCache: Bool = true,
                         progress: @escaping (Double) -> Void) async throws -> [AnalysisSuggestion] {
         let known = Set(digests.map(\.path))
         var out: [AnalysisSuggestion] = []
         let chunks = stride(from: 0, to: digests.count, by: 16).map { Array(digests[$0..<min($0 + 16, digests.count)]) }
         for (i, chunk) in chunks.enumerated() {
             try Task.checkCancellation()
-            let raw = try await generator.generate(system: system, userText: userText(digests: chunk, folders: folders),
-                                                   images: [], schema: schema)
-            out += parse(try RevJSON.parse(raw), knownPaths: known, folders: folders)
+            let text = userText(digests: chunk, folders: folders)
+            let key = CourseLedger.fingerprint(system, text)
+            if useCache, let ledger, let kept = ledger.cachedAI(key), let parsed = try? RevJSON.parse(kept) {
+                out += parse(parsed, knownPaths: known, folders: folders)
+                progress(Double(i + 1) / Double(chunks.count))
+                continue
+            }
+            let raw = try await generator.generate(system: system, userText: text, images: [], schema: schema)
+            let parsed = try RevJSON.parse(raw)
+            ledger?.storeAI(key, json: raw)
+            out += parse(parsed, knownPaths: known, folders: folders)
             progress(Double(i + 1) / Double(chunks.count))
         }
         return out
