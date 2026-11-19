@@ -92,9 +92,23 @@ enum LibraryTree {
     /// Dossier ou fichier d'évaluation : « Eval », « Évaluations », « Contrôle fin de thème », « EVAL PSE », « evalphisyque »…
     static func looksLikeEvaluation(_ name: String) -> Bool {
         // par prudence, ces mots comptent n'importe où dans le nom (« Chap3 eval », « Seq 2 - Contrôle », « DS3 », « Mes Eval »)
-        let n = folded(name)
-        return n.range(of: "\\b(eval\\w*|controle\\w*|interro\\w*|examen\\w*)\\b|\\bds\\s*\\d", options: .regularExpression) != nil
+        let n = folded(name).replacingOccurrences(of: "_", with: " ")   // « _ » est un caractère de mot : on le remplace
+        return n.range(of: evaluationPattern, options: .regularExpression) != nil
             || n.hasPrefix("eval") || n.hasPrefix("controle") || n.contains("evaluation")
+    }
+
+    private static let evaluationPattern = "\\b(eval\\w*|controle\\w*|interro\\w*|examen\\w*|devoir\\s+surveill\\w*|bac\\s+blanc)\\b|\\bds\\s*\\d"
+
+    /// Début de la page 1 (300 premiers caractères) qui annonce une évaluation : par prudence, un de ces mots suffit
+    /// (mieux vaut une fausse alerte qu'une évaluation lue, comparée ou envoyée à l'IA).
+    static func headerLooksLikeEvaluation(_ excerpt: String) -> Bool {
+        let head = folded(String(excerpt.trimmingCharacters(in: .whitespacesAndNewlines).prefix(300))).replacingOccurrences(of: "_", with: " ")
+        return head.range(of: evaluationPattern, options: .regularExpression) != nil
+    }
+
+    /// Un chemin relatif (« Maths/Évaluations/DS 1.pdf ») dont un dossier ou le nom évoque une évaluation.
+    static func isEvaluationPath(_ components: [String]) -> Bool {
+        components.contains { looksLikeEvaluation(($0 as NSString).deletingPathExtension) }
     }
 
     static func state(forName name: String) -> LibraryFileState {

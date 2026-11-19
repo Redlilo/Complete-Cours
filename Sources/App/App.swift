@@ -73,6 +73,10 @@ struct AppCommands: Commands {
     @ObservedObject var model: CoursModel
     @ObservedObject var engines: EngineStatus
     @Environment(\.openSettings) private var openSettings
+    @ObservedObject private var navigator = Navigator.shared
+
+    /// Les commandes de l'écran Compléter ne servent que dans cette partie de l'app.
+    private var inCompleter: Bool { navigator.mode == .completer }
 
     var body: some Commands {
         CommandGroup(replacing: .newItem) {
@@ -87,7 +91,7 @@ struct AppCommands: Commands {
                 .keyboardShortcut("o")
             Menu("Ouvrir récent") {
                 ForEach(model.recents, id: \.self) { url in
-                    Button(url.deletingPathExtension().lastPathComponent) { model.open(url) }
+                    Button(url.deletingPathExtension().lastPathComponent) { Navigator.shared.mode = .completer; model.open(url) }
                 }
                 if !model.recents.isEmpty { Divider() }
                 Button("Effacer le menu") { model.clearRecents() }
@@ -101,7 +105,7 @@ struct AppCommands: Commands {
                 .keyboardShortcut("w")
             Button("Enregistrer le PDF complété…") { model.savePDF() }
                 .keyboardShortcut("s")
-                .disabled(!model.canSave)
+                .disabled(!model.canSave || !inCompleter)
         }
 
         CommandMenu("Cours") {
@@ -109,7 +113,7 @@ struct AppCommands: Commands {
                 Actions.complete(model: model, engines: engines) { openSettings() }
             }
             .keyboardShortcut("r")
-            .disabled(!model.canComplete)
+            .disabled(!model.canComplete || !inCompleter)
             Button("Annuler le traitement") { model.cancelRun() }
                 .keyboardShortcut(".")
                 .disabled(!model.isRunning)
@@ -124,19 +128,19 @@ struct AppCommands: Commands {
             }
             Button("Ajouter une zone à la main") { model.beginDrawingZone() }
                 .keyboardShortcut("n", modifiers: [.command, .shift])
-                .disabled(!model.canDrawZone)
+                .disabled(!model.canDrawZone || !inCompleter)
         }
 
         CommandGroup(before: .toolbar) {
             Button("Zoom avant") { model.zoomIn() }
                 .keyboardShortcut("+")
-                .disabled(model.document == nil)
+                .disabled(model.document == nil || !inCompleter)
             Button("Zoom arrière") { model.zoomOut() }
                 .keyboardShortcut("-")
-                .disabled(model.document == nil)
+                .disabled(model.document == nil || !inCompleter)
             Button("Ajuster à la fenêtre") { model.zoomToFit() }
                 .keyboardShortcut("0")
-                .disabled(model.document == nil)
+                .disabled(model.document == nil || !inCompleter)
             Divider()
         }
     }

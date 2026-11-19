@@ -17,6 +17,8 @@ final class FakeEngine: CompletionEngine, @unchecked Sendable {
     private let lock = NSLock()
     private var _requests: [PageRequest] = []
     private var _humanizeCalls = 0
+    private var _tones: [HumanizeTone] = []
+    var seenTones: [HumanizeTone] { lock.lock(); defer { lock.unlock() }; return _tones }
 
     var requests: [PageRequest] { lock.lock(); defer { lock.unlock() }; return _requests }
     var humanizeCalls: Int { lock.lock(); defer { lock.unlock() }; return _humanizeCalls }
@@ -43,6 +45,7 @@ final class FakeEngine: CompletionEngine, @unchecked Sendable {
 
     func humanize(_ items: [HumanizeItem]) async throws -> [Int: String] {
         countHumanize()
+        lock.lock(); _tones += items.map(\.tone); lock.unlock()
         guard humanizeEnabled else { return [:] }
         var out: [Int: String] = [:]
         for it in items {

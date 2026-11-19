@@ -68,6 +68,10 @@ enum BatchCompleter {
         let isEval = root.flatMap { LibraryTree.makeFile(root: $0, url: url)?.isEvaluation } ?? LibraryTree.looksLikeEvaluation(name)
         if isEval { r.hardProblems.append("« \(name) » est une évaluation : elle n'est jamais complétée."); return r }
         guard fm.fileExists(atPath: url.path) else { r.hardProblems.append("Le fichier « \(name) » n'existe plus."); return r }
+        // une évaluation au nom neutre se reconnaît à son en-tête (lecture locale de la première page seulement)
+        if LibraryTree.headerLooksLikeEvaluation(CourseAnalysis.firstPageText(url)) {
+            r.hardProblems.append("« \(name) » ressemble à une évaluation : elle n'est jamais complétée."); return r
+        }
         if out.standardizedFileURL == url.standardizedFileURL { r.hardProblems.append("Le fichier de sortie doit être différent du fichier d'entrée."); return r }
         if fm.fileExists(atPath: out.path), !allowOverwrite {
             r.hardProblems.append("« \(out.lastPathComponent) » existe déjà : rien n'a été remplacé."); return r

@@ -65,6 +65,7 @@ func waitUntil(_ timeout: TimeInterval = 15, _ condition: () -> Bool) async -> B
 final class Knobs {
     var kind: EngineKind = .claude
     var humanize = true
+    var humanizeTone: HumanizeTone = .eleve
     var style = "bleu"
     var flatten = true
     var student = StudentProfile()
@@ -79,7 +80,7 @@ func makeModel(engine: CompletionEngine, knobs knobsOrNil: Knobs? = nil, dialogs
     let defaults = UserDefaults(suiteName: suiteName)!
     defaults.removePersistentDomain(forName: suiteName)
     return CoursModel(
-        settings: { RunSettings(engine: knobs.kind, claudeModel: "claude-test", humanize: knobs.humanize,
+        settings: { RunSettings(engine: knobs.kind, claudeModel: "claude-test", humanize: knobs.humanize, humanizeTone: knobs.humanizeTone,
                                 styleKey: knobs.style, flatten: knobs.flatten, student: knobs.student) },
         engineFactory: { _ in engine },
         dialogs: dialogs,
@@ -287,6 +288,7 @@ func testCompletion(_ files: TestPDFs.Files) async {
     check(model.zones.filter { $0.kind == .question && $0.enabled }.allSatisfy { $0.humanized && $0.answer != $0.rawAnswer },
           "les questions ouvertes sont humanisées")
     check(engine.humanizeCalls >= 1, "l'étape d'humanisation a eu lieu")
+    check(!engine.seenTones.isEmpty && engine.seenTones.allSatisfy { $0 == .eleve }, "ton « Style élève » par défaut transmis : \(engine.seenTones)")
     check(model.hasUnsavedChanges, "du travail à enregistrer")
     check(model.notice?.style == .success && (model.notice?.text ?? "").hasPrefix("C'est fait : 9 réponses écrites."), "message de fin : \(model.notice?.text ?? "")")
     check(engine.requests.count == 2, "une requête par page")

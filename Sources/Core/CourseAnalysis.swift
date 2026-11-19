@@ -30,7 +30,9 @@ enum CourseAnalysis {
     /// Résumé d'un fichier, relu seulement s'il est nouveau ou modifié (taille ou date) depuis le journal.
     /// `force` : relit tout. `fromCache` dit si la lecture a été évitée.
     static func digest(_ file: LibraryFile, ledger: CourseLedger?, force: Bool = false) -> (digest: CourseDigest, fromCache: Bool) {
-        if !force, let ledger, let hit = ledger.cachedDigest(for: file.url, relativePath: file.relativePath) { return (hit, true) }
+        // un résumé gardé avant que le fichier devienne une évaluation (déplacé, renommé) n'est plus valable
+        if !force, let ledger, let hit = ledger.cachedDigest(for: file.url, relativePath: file.relativePath),
+           !(file.isEvaluation && !hit.isEvaluation) { return (hit, true) }
         return (digest(file), false)
     }
 
@@ -38,6 +40,8 @@ enum CourseAnalysis {
         var d = CourseDigest(path: file.relativePath, isEvaluation: file.isEvaluation, excerpt: "")
         guard !file.isEvaluation, file.url.pathExtension.lowercased() == "pdf" else { return d }
         d.excerpt = firstPageText(file.url)
+        // une évaluation au nom neutre (« Maths_T2.pdf ») se reconnaît à son en-tête : on la traite comme telle
+        if LibraryTree.headerLooksLikeEvaluation(d.excerpt) { d.isEvaluation = true; d.excerpt = ""; return d }
         if let r = CompletionStatus.report(url: file.url) {
             d.zones = r.zones; d.remaining = r.remaining; d.isIncomplete = r.isIncomplete
         }
@@ -116,17 +120,21 @@ enum CourseAnalysis {
     }
 
     /// Lit la réponse ; ignore tout ce qui n'est pas un chemin connu ou un dossier plausible.
-    static func parse(_ raw: Any, knownPaths: Set<String>, folders: [String]) -> [AnalysisSuggestion] {
+    static func parse(_ raw: Any, knownPaths: Set<String>, folders: [String], evaluationPaths: Set<String> = []) -> [AnalysisSuggestion] {
         guard let root = raw as? [String: Any], let list = root["propositions"] as? [[String: Any]] else { return [] }
         let subjects = Set(folders.compactMap { $0.split(separator: "/").first.map(String.init) })
         var out: [AnalysisSuggestion] = []
         for item in list {
             let path = RevJSON.str(item["chemin"]), folder = RevJSON.str(item["dossier"])
-            let name = RevJSON.str(item["nouveauNom"]).replacingOccurrences(of: "/", with: "-")
+            let name = cleanName(RevJSON.str(item["nouveauNom"]))
             guard knownPaths.contains(path), !folder.isEmpty, !folder.contains(".."),
                   let subject = folder.split(separator: "/").first.map(String.init), subjects.contains(subject) else { continue }
             let current = (path as NSString).deletingLastPathComponent
             if folder == current && name.isEmpty { continue }
+            // une évaluation ne change ni de nom ni de type de dossier : seulement vers un dossier « Évaluations »
+            if evaluationPaths.contains(path), !name.isEmpty || !LibraryTree.isEvaluationPath(folder.split(separator: "/").map(String.init)) { continue }
+            // renommer vers le même nom ne sert à rien
+            if folder == current && OriginalsArchive.normalized(name) == OriginalsArchive.normalized(((path as NSString).lastPathComponent as NSString).deletingPathExtension) { continue }
             out.append(AnalysisSuggestion(path: path, folder: folder, newName: name, reason: RevJSON.str(item["raison"])))
         }
         return out
@@ -138,6 +146,7 @@ enum CourseAnalysis {
                         ledger: CourseLedger? = nil, useCache: Bool = true,
                         progress: @escaping (Double) -> Void) async throws -> [AnalysisSuggestion] {
         let known = Set(digests.map(\.path))
+        let evalPaths = Set(digests.filter(\.isEvaluation).map(\.path))
         var out: [AnalysisSuggestion] = []
         let chunks = stride(from: 0, to: digests.count, by: 16).map { Array(digests[$0..<min($0 + 16, digests.count)]) }
         for (i, chunk) in chunks.enumerated() {
@@ -145,14 +154,14 @@ enum CourseAnalysis {
             let text = userText(digests: chunk, folders: folders)
             let key = CourseLedger.fingerprint(system, text)
             if useCache, let ledger, let kept = ledger.cachedAI(key), let parsed = try? RevJSON.parse(kept) {
-                out += parse(parsed, knownPaths: known, folders: folders)
+                out += parse(parsed, knownPaths: known, folders: folders, evaluationPaths: evalPaths)
                 progress(Double(i + 1) / Double(chunks.count))
                 continue
             }
             let raw = try await generator.generate(system: system, userText: text, images: [], schema: schema)
             let parsed = try RevJSON.parse(raw)
             ledger?.storeAI(key, json: raw)
-            out += parse(parsed, knownPaths: known, folders: folders)
+            out += parse(parsed, knownPaths: known, folders: folders, evaluationPaths: evalPaths)
             progress(Double(i + 1) / Double(chunks.count))
         }
         return out
@@ -161,13 +170,40 @@ enum CourseAnalysis {
     // MARK: Déplacement
 
     /// Déplace sans jamais écraser : « Nom (2).pdf » si le nom existe déjà. Renvoie le nouvel emplacement.
-    static func move(_ s: AnalysisSuggestion, root: URL, source explicitSource: URL? = nil) throws -> URL {
+    /// Nom de fichier sûr : sans extension .pdf, sans « / » ni « : », une seule ligne, 120 caractères au plus.
+    static func cleanName(_ raw: String) -> String {
+        var n = raw.replacingOccurrences(of: "[/:\\n\\r\\t]", with: " ", options: .regularExpression)
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if n.lowercased().hasSuffix(".pdf") { n = String(n.dropLast(4)).trimmingCharacters(in: .whitespaces) }
+        while n.hasPrefix(".") { n.removeFirst() }
+        return String(n.prefix(120))
+    }
+
+    /// Déplace sans jamais écraser : « Nom (2).pdf » si le nom existe déjà. Une évaluation ne peut aller que dans un dossier
+    /// « Évaluations » et garde son nom. Renvoie le nouvel emplacement.
+    static func move(_ s: AnalysisSuggestion, root: URL, source explicitSource: URL? = nil, sourceIsEvaluation: Bool? = nil) throws -> URL {
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: root.path, isDirectory: &isDir), isDir.boolValue else {
+            throw CoursError.message("Le dossier des cours est introuvable : rien n'a été déplacé.")
+        }
         let source = explicitSource ?? root.appendingPathComponent(s.path)
         let ext = source.pathExtension
-        let base = s.newName.isEmpty ? source.deletingPathExtension().lastPathComponent : s.newName
-        let dir = s.folder.split(separator: "/").reduce(root) { $0.appendingPathComponent(String($1)) }
+        let newName = cleanName(s.newName)
+        let folderParts = s.folder.split(separator: "/").map(String.init)
+        let sourceName = source.deletingPathExtension().lastPathComponent
+        let isEval = sourceIsEvaluation ?? (LibraryTree.looksLikeEvaluation(sourceName)
+            || LibraryTree.isEvaluationPath(s.path.split(separator: "/").dropLast().map(String.init)))
+        if isEval, !newName.isEmpty || !LibraryTree.isEvaluationPath(folderParts) {
+            throw CoursError.message("« \(sourceName) » est une évaluation : elle ne peut aller que dans un dossier « Évaluations », sans changer de nom.")
+        }
+        let base = newName.isEmpty ? sourceName : newName
+        let dir = folderParts.reduce(root) { $0.appendingPathComponent($1) }
+        let wanted = dir.appendingPathComponent(base).appendingPathExtension(ext)
+        // déjà au bon endroit sous le bon nom : rien à faire (pas de « Nom (2).pdf »)
+        if wanted.standardizedFileURL.path == source.standardizedFileURL.path { return source }
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        var target = dir.appendingPathComponent(base).appendingPathExtension(ext)
+        var target = wanted
         var n = 2
         while FileManager.default.fileExists(atPath: target.path) {
             target = dir.appendingPathComponent("\(base) (\(n))").appendingPathExtension(ext); n += 1

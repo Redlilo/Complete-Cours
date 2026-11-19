@@ -65,6 +65,9 @@ struct RevisionRootView: View {
             model.refreshEngine()
             if !tabs.contains(model.tab), let first = tabs.first { model.tab = first }
         }
+        // l'élève change de moteur ou ajoute sa clé dans les Réglages : les boutons se débloquent sans rouvrir le cours
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in model.refreshEngine() }
+        .onReceive(NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)) { _ in model.refreshEngine() }
         .frame(minWidth: 640, minHeight: 480)
     }
 

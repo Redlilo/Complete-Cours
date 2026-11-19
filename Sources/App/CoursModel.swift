@@ -579,8 +579,8 @@ final class CoursModel: ObservableObject {
             let wasIgnored = z.kind == .ignorer
             z.kind = kind
             if kind == .ignorer { z.enabled = false } else if wasIgnored { z.enabled = true }
-            // Un mot à compléter n'est jamais réécrit : on remet le texte d'origine.
-            if kind == .mot && z.humanized {
+            // Seules les questions ouvertes sont réécrites : pour une définition, un mot ou une zone ignorée, on remet le texte d'origine.
+            if !kind.isHumanizable && z.humanized {
                 z.answer = z.rawAnswer
                 z.humanized = false
             }
@@ -786,6 +786,7 @@ final class CoursModel: ObservableObject {
         // une copie enregistrée à côté de l'original est une complétion faite par l'app : on s'en souvient
         if destination.deletingLastPathComponent().standardizedFileURL == source.deletingLastPathComponent().standardizedFileURL {
             CourseLedger.shared.recordCompletion(original: source, copy: destination, engine: settings.engineDisplayName)
+            NotificationCenter.default.post(name: .courseCopySaved, object: nil)   // « Mes cours » se met à jour
         }
     }
 
@@ -810,4 +811,9 @@ final class CoursModel: ObservableObject {
     func zoomIn() { previewView?.zoomIn(nil) }
     func zoomOut() { previewView?.zoomOut(nil) }
     func zoomToFit() { previewView?.autoScales = true }
+}
+
+extension Notification.Name {
+    /// Une copie complétée vient d'être enregistrée à côté de son original.
+    static let courseCopySaved = Notification.Name("fr.complete-cours.courseCopySaved")
 }

@@ -40,10 +40,7 @@ struct CostEstimate: Equatable {
     static let euroPerDollar = 0.92
 
     static func isEvaluationPath(_ path: String) -> Bool {
-        let parts = path.split(separator: "/").map { fold(String($0)) }
-        guard let name = parts.last else { return false }
-        if LibraryTree.looksLikeEvaluation(name) || name.hasPrefix("eval") || name.hasPrefix("controle") { return true }
-        return parts.dropLast().contains { $0.hasPrefix("eval") }
+        LibraryTree.isEvaluationPath(path.split(separator: "/").map(String.init))
     }
 
     static func fold(_ s: String) -> String {

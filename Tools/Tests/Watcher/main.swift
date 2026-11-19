@@ -257,7 +257,7 @@ do {
     // IA indisponible : rien déplacé
     let a = downloads.appendingPathComponent("Attente.pdf"); makeTextPDF(a, text: "Cours de physique")
     let r5 = await AutoIntakeProcessor.process(a, watchedFolder: downloads, root: root, ledger: ledger, generator: nil)
-    check(r5 == .unavailable && fm.fileExists(atPath: a.path), "sans IA : rien déplacé")
+    check(r5 == .unavailable && fm.fileExists(atPath: a.path), "sans IA : rien déplacé (\(r5), existe : \(fm.fileExists(atPath: a.path)))")
     let broken = FakeAI(""); broken.fail = true
     let r6 = await AutoIntakeProcessor.process(a, watchedFolder: downloads, root: root, ledger: ledger, generator: broken)
     check(r6 == .unavailable && fm.fileExists(atPath: a.path), "IA en panne : rien déplacé")
@@ -267,10 +267,10 @@ do {
     let r7 = await AutoIntakeProcessor.process(a, watchedFolder: downloads, root: root, ledger: ledger, generator: junk)
     check({ if case .failed = r7 { return true }; return false }() && fm.fileExists(atPath: a.path), "réponse sans estUnCours : rien déplacé")
 
-    // un cours sans proposition : il reste où il est (jamais de nouvelle matière inventée)
+    // un cours sans proposition : il reste où il est, traité une fois pour toutes (jamais de nouvelle matière inventée)
     let noProp = FakeAI(#"{"estUnCours": true, "propositions": []}"#)
     let r8 = await AutoIntakeProcessor.process(a, watchedFolder: downloads, root: root, ledger: ledger, generator: noProp)
-    check(r8 == .unavailable && fm.fileExists(atPath: a.path), "sans proposition : le fichier reste en attente")
+    check({ if case .failed = r8 { return true }; return false }() && fm.fileExists(atPath: a.path), "sans proposition : le fichier reste en place et n'est pas renvoyé à l'IA à chaque lancement")
 
     // garde-fou : fichier hors du dossier surveillé
     let outside = freshDir("dehors").appendingPathComponent("Hors.pdf"); makeTextPDF(outside, text: "x")

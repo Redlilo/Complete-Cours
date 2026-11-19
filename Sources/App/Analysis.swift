@@ -49,12 +49,17 @@ final class MoveHistory: ObservableObject {
 
     func undoBanner() {
         guard let b = banner else { return }
-        report(b.ids.compactMap { id in moves.first { $0.id == id } }.map { ($0, ledger.undo($0.id)) })
+        report(b.ids.reversed().compactMap { id in moves.first { $0.id == id } }.map { ($0, ledger.undo($0.id)) })
         banner = nil
         finish()
     }
 
     func undoAll() {
+        let alert = NSAlert()
+        alert.messageText = "Remettre \(moves.count) fichier\(moves.count > 1 ? "s" : "") à leur place d'origine ?"
+        alert.informativeText = "Tous les rangements de l'historique sont annulés, même les plus anciens. Un fichier dont l'emplacement d'origine est pris reste où il est."
+        alert.addButton(withTitle: "Tout annuler"); alert.addButton(withTitle: "Garder le rangement")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
         report(ledger.undoAll())
         banner = nil
         finish()
@@ -111,11 +116,15 @@ final class AnalysisModel: ObservableObject {
     private let ledger = CourseLedger.shared
     let history = MoveHistory.shared
 
+    /// Vrai dès qu'une analyse a été lancée : permet d'afficher « Analyse arrêtée » au lieu d'un spinner sans fin.
+    @Published var hasRun = false
+
     var isBusy: Bool { if preparing { return true }; if case .reading = phase { return true }; if case .asking = phase { return true }; return batch != nil }
 
     /// `force` : relit tous les cours et redemande à l'IA, sans utiliser ce que le journal a gardé.
     func run(force: Bool = false) {
         guard !isBusy else { return }
+        hasRun = true
         let library = LibraryModel.shared
         let root = library.root, files = library.files.filter { $0.folders.first?.hasPrefix("_") != true }
         suggestions = []; incomplete = []; note = nil; batchReport = nil; pageCache = [:]
@@ -274,7 +283,7 @@ final class AnalysisModel: ObservableObject {
                     if r.zoneProblems.isEmpty { ok.append(name) } else { partial.append("\(name) : \(r.zoneProblems.joined(separator: " "))") }
                     incomplete.removeAll { $0.path == d.path }
                     // « ne garder que les versions complétées » : l'original vide part dans le dossier des originaux
-                    if r.zoneProblems.isEmpty, UserDefaults.standard.object(forKey: "archiveOriginals") as? Bool ?? true,
+                    if r.zoneProblems.isEmpty, UserDefaults.standard.object(forKey: Pref.archiveOriginals) as? Bool ?? true,
                        let rec = OriginalsArchive.archiveAfterCompletion(original: r.input, copy: r.output, root: root, ledger: ledger) {
                         MoveHistory.shared.didMove([rec.id])
                     }
@@ -314,6 +323,7 @@ final class IntakeModel: ObservableObject {
 
     func handle(_ urls: [URL]) {
         let pdfs = urls.filter { $0.pathExtension.lowercased() == "pdf" }
+        lastMove = nil
         guard !pdfs.isEmpty else { notice = "Dépose un PDF : les autres formats ne sont pas encore pris en charge."; return }
         Task { for url in pdfs { await file(url) } }
     }
@@ -329,11 +339,14 @@ final class IntakeModel: ObservableObject {
 
     private func file(_ url: URL) async {
         busy = true; defer { busy = false }
+        lastMove = nil
         let root = LibraryModel.shared.root
         let name = url.deletingPathExtension().lastPathComponent
         notice = "Lecture de « \(name) »…"
-        let isEval = LibraryTree.looksLikeEvaluation(name)
-        let excerpt = isEval ? "" : await Task.detached { CourseAnalysis.firstPageText(url) }.value
+        var isEval = LibraryTree.looksLikeEvaluation(name)
+        var excerpt = isEval ? "" : await Task.detached { CourseAnalysis.firstPageText(url) }.value
+        // une évaluation au nom neutre se reconnaît à son en-tête : son contenu ne part pas vers l'IA
+        if !isEval, LibraryTree.headerLooksLikeEvaluation(excerpt) { isEval = true; excerpt = "" }
         let folders = await Task.detached { CourseAnalysis.folderCatalog(root: root) }.value
         let digest = CourseDigest(path: "À ranger/\(url.lastPathComponent)", isEvaluation: isEval, excerpt: excerpt)
         var suggestion = AnalysisSuggestion(path: digest.path, folder: "À classer", newName: "", reason: "")
@@ -343,14 +356,14 @@ final class IntakeModel: ObservableObject {
                                                    userText: CourseAnalysis.userText(digests: [digest], folders: folders),
                                                    images: [], schema: CourseAnalysis.schema),
            let parsed = try? RevJSON.parse(raw),
-           let s = CourseAnalysis.parse(parsed, knownPaths: [digest.path], folders: folders).first {
+           let s = CourseAnalysis.parse(parsed, knownPaths: [digest.path], folders: folders, evaluationPaths: isEval ? [digest.path] : []).first {
             suggestion = s; how = s.reason
         }
         // un nom de scan (« Scan2026… », « IMG_… ») est remplacé ; un nom choisi par l'élève est gardé
         let junk = name.range(of: "^(scan|img|image|document|sans titre|untitled)[ _-]*\\d", options: [.regularExpression, .caseInsensitive]) != nil
         if !junk { suggestion.newName = "" }
         do {
-            let to = try CourseAnalysis.move(suggestion, root: root, source: url)
+            let to = try CourseAnalysis.move(suggestion, root: root, source: url, sourceIsEvaluation: isEval)
             let record = CourseLedger.shared.recordMove(from: url, to: to, origin: .depot)
             lastMove = record.id
             MoveHistory.shared.reload()
@@ -379,14 +392,21 @@ struct AnalysisSheet: View {
             content
         }
         .frame(minWidth: 760, minHeight: 560)
-        .onAppear { if model.phase == .idle { model.run() }; model.refreshCost() }
+        .onAppear { if model.phase == .idle, !model.hasRun { model.run() }; model.refreshCost() }
         .onChange(of: model.completeChoice) { _, _ in model.refreshCost() }
         .onChange(of: model.incomplete) { _, _ in model.refreshCost() }
     }
 
     @ViewBuilder private var content: some View {
         switch model.phase {
-        case .idle: ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+        case .idle:
+            if model.hasRun {
+                VStack(spacing: 10) {
+                    Text("Analyse arrêtée").font(.headline)
+                    Text("Tu peux la relancer quand tu veux : les cours déjà lus ne sont pas relus.").font(.callout).foregroundStyle(.secondary)
+                    Button("Relancer l'analyse") { model.run() }.buttonStyle(.borderedProminent)
+                }.frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else { ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity) }
         case .reading(let p): progress("Lecture des cours… (\(model.rereadCount) relus, \(model.unchangedCount) inchangés)", p)
         case .asking(let p): progress("L'IA compare le contenu et l'emplacement…", p)
         case .failed(let m): Text(m).padding(20)

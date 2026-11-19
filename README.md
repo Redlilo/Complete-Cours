@@ -78,7 +78,13 @@ sans serveur intermédiaire) :
   **texte** de la page, le nom du fichier (sans `.pdf`), le numéro de la page et la date du jour ;
 - ton **nom, prénom et classe**, seulement si tu les as écrits dans les Réglages (ils servent uniquement à remplir les
   champs d'identité) ;
-- pour l'humanisation : les réponses aux questions ouvertes, avec la consigne qui les précède.
+- pour l'humanisation : les réponses aux questions ouvertes, avec la consigne qui les précède ;
+- pour **ranger et analyser tes cours** (« Ajouter », « Analyser », dépôt automatique) : le **nom** du fichier et les
+  **450 premiers caractères de sa première page**, jamais le PDF entier. Les **évaluations** (nom, dossier ou en-tête
+  qui les annonce) ne sont jamais lues par l'IA : elles sont rangées d'après leur nom seulement. Le dépôt automatique
+  ignore en plus ce qui ressemble à une pièce personnelle (facture, IBAN, e-mail, passeport…) ;
+- pour les **fiches de révision, cartes mémoire et questions** : le texte (et l'image) des pages du cours ouvert, plus ta
+  consigne libre si tu en écris une.
 
 Le fichier PDF lui-même n'est pas envoyé, mais ce qui est écrit sur ses pages à compléter l'est. Évite donc les
 documents qui contiennent des informations personnelles que tu ne veux pas partager. Ta clé n'est envoyée qu'à
@@ -86,6 +92,24 @@ Anthropic, pour s'identifier.
 
 **Apple Intelligence.** Il faut un Mac compatible, avec Apple Intelligence activée (voir Dépannage). Si elle est
 prête, c'est le moteur proposé au départ. Rien ne sort de ton Mac.
+
+## Les quatre parties de l'app (⌘1 à ⌘4)
+
+- **Mes cours** : tous tes PDF rangés comme dans ton dossier `Cours`, avec vignettes, aperçu, « Reprendre où tu étais »,
+  recherche par nom **et dans le contenu** (index local), **Ajouter** un cours (lu puis rangé tout seul, annulable),
+  **Analyser** (propose de ranger/renommer et de compléter les cours qui ont encore des trous), **Doublons** (lit tous
+  les PDF et met à la Corbeille, après ta validation, ce qui est identique ou presque), **Ranger les originaux vides**
+  (menu « … » ou menu *Cours* : le PDF vide d'un cours complété va dans `_Originaux avant completion`, même
+  arborescence), **Historique des rangements** (annuler un rangement, même après un redémarrage) et **Dépôt
+  automatique** d'un dossier surveillé (désactivé tant que tu ne l'actives pas ; notification avec « Annuler »).
+- **Compléter un cours** : voir *Utilisation* ci-dessous. L'interrupteur « Humaniser les réponses aux questions » est en
+  haut du panneau, avec le ton *Style élève* ou *Précis*.
+- **Fiches de révision** : fiche de synthèse (consigne libre possible), cartes mémoire (retournables, export PDF
+  imprimable) et questions d'entraînement corrigées.
+- **Évaluations** : corrigé d'une évaluation **déjà rendue et notée**, pour comprendre tes erreurs. L'app ne complète
+  jamais une évaluation.
+
+Rien n'est supprimé définitivement : les doublons vont à la Corbeille, les rangements se défont depuis l'historique.
 
 ## Utilisation
 
@@ -118,7 +142,8 @@ par son texte d'origine. Tu peux couper l'humanisation dans les Réglages.
 - **Scans très penchés, froissés, très pâles ou de mauvaise qualité** : des lignes ou des cases peuvent être manquées ou
   mal placées. Ajoute alors les zones à la main (dessine un rectangle sur la page).
 - **PDF protégés par un mot de passe** : non lus. Ouvre-les dans Aperçu et exporte une copie sans mot de passe.
-- Un seul PDF à la fois.
+- Dans l'écran « Compléter », un seul PDF à la fois ; pour plusieurs cours, utilise « Analyser » dans « Mes cours »
+  (complétion en lot, avec estimation du coût avant de lancer).
 - Les questions qui demandent une information sur toi (stage, entreprise, avis personnel) sont ignorées : l'IA ne peut
   pas les connaître, écris-les toi-même.
 - Avec Apple Intelligence, les schémas et les images ne sont pas vus, seulement le texte.

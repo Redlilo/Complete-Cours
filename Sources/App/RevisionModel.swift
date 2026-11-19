@@ -389,8 +389,19 @@ final class RevisionModel: ObservableObject {
 
     // MARK: Fiche
 
+    /// Pas de fiche ni de cartes ni de questions à partir d'une évaluation : le corrigé après la note est dans l'onglet Évaluations.
+    private func evaluationBlocksGeneration() -> Bool {
+        guard let url = documentURL else { return false }
+        let parts = Array(url.pathComponents.suffix(4))
+        guard LibraryTree.isEvaluationPath(parts) else { return false }
+        issue = RevisionIssue(title: "C'est une évaluation",
+                              what: "Les fiches, cartes mémoire et questions d'entraînement se font à partir des cours, pas d'une évaluation.",
+                              todo: "Une fois l'évaluation rendue et notée, utilise la partie « Évaluations » pour comprendre tes erreurs.")
+        return true
+    }
+
     func makeSummary() {
-        guard canStart else { return }
+        guard canStart, !evaluationBlocksGeneration() else { return }
         let instruction = RevisionPrompts.cleanInstruction(summaryInstruction)
         start("Lecture du cours…", failure: "La fiche n'a pas pu être créée") { [weak self] t in
             guard let self else { return }
@@ -439,7 +450,7 @@ final class RevisionModel: ObservableObject {
     }
 
     func makeQuiz() {
-        guard canStart, !quizOptions.styles.isEmpty else { return }
+        guard canStart, !quizOptions.styles.isEmpty, !evaluationBlocksGeneration() else { return }
         var options = quizOptions
         options.instruction = RevisionPrompts.cleanInstruction(options.instruction)
         start("Lecture du cours…", failure: "Les questions n'ont pas pu être créées") { [weak self] t in
@@ -562,7 +573,7 @@ final class RevisionModel: ObservableObject {
     func setCardCount(_ n: Int) { cardCount = min(CardLimits.range.upperBound, max(CardLimits.range.lowerBound, n)) }
 
     func makeCards() {
-        guard canStart else { return }
+        guard canStart, !evaluationBlocksGeneration() else { return }
         let count = min(CardLimits.range.upperBound, max(CardLimits.range.lowerBound, cardCount))
         start("Lecture du cours…", failure: "Les cartes n'ont pas pu être créées") { [weak self] t in
             guard let self else { return }

@@ -133,4 +133,36 @@ if let p = archPlans.first {
 }
 try? FileManager.default.removeItem(at: arch)
 
+// Évaluations : « _ », en-tête, déplacement protégé, nom nettoyé, filtre de vie privée
+for n in ["Maths_Controle_2", "Chap3_eval", "maths_ds3", "Seq2_Examen", "Devoir surveillé 2", "Seance_Eval", "Interrogation 3", "Bac blanc"] {
+    check(LibraryTree.looksLikeEvaluation(n), "évaluation reconnue : \(n)")
+}
+for n in ["Séance 1 - Origine", "Le pH", "Dossiers", "Statistiques à une variable"] {
+    check(!LibraryTree.looksLikeEvaluation(n), "cours non pris pour une évaluation : \(n)")
+}
+check(LibraryTree.headerLooksLikeEvaluation("Lycée Saint-Nicolas — Contrôle n°2 de mathématiques NOM :"), "en-tête « Contrôle »")
+check(LibraryTree.headerLooksLikeEvaluation("Interrogation écrite – 30 min"), "en-tête « Interrogation »")
+check(!LibraryTree.headerLooksLikeEvaluation("Séquence 1 : Chimie. Comprendre les éléments chimiques"), "en-tête d'un cours")
+check(LibraryTree.isEvaluationPath(["Maths", "Évaluations", "DS 1.pdf"]), "chemin dans Évaluations")
+check(CourseAnalysis.cleanName("  Séance 4 : Le Horla/fin.pdf ") == "Séance 4 Le Horla fin", "nom nettoyé : \(CourseAnalysis.cleanName("  Séance 4 : Le Horla/fin.pdf "))")
+let evRoot = FileManager.default.temporaryDirectory.appendingPathComponent("eval-\(getpid())")
+try? FileManager.default.createDirectory(at: evRoot.appendingPathComponent("Maths/Évaluations"), withIntermediateDirectories: true)
+try? FileManager.default.createDirectory(at: evRoot.appendingPathComponent("Maths/Cours"), withIntermediateDirectories: true)
+FileManager.default.createFile(atPath: evRoot.appendingPathComponent("Maths/Évaluations/DS 1.pdf").path, contents: Data("x".utf8))
+FileManager.default.createFile(atPath: evRoot.appendingPathComponent("Maths/Cours/Stats.pdf").path, contents: Data("y".utf8))
+let evMove = AnalysisSuggestion(path: "Maths/Évaluations/DS 1.pdf", folder: "Maths/Cours", newName: "", reason: "")
+check((try? CourseAnalysis.move(evMove, root: evRoot)) == nil && FileManager.default.fileExists(atPath: evRoot.appendingPathComponent("Maths/Évaluations/DS 1.pdf").path), "une évaluation ne sort pas de « Évaluations »")
+let evRename = AnalysisSuggestion(path: "Maths/Évaluations/DS 1.pdf", folder: "Maths/Évaluations", newName: "Autre nom", reason: "")
+check((try? CourseAnalysis.move(evRename, root: evRoot)) == nil, "une évaluation n'est pas renommée")
+let same = AnalysisSuggestion(path: "Maths/Cours/Stats.pdf", folder: "Maths/Cours", newName: "Stats", reason: "")
+check((try? CourseAnalysis.move(same, root: evRoot))?.lastPathComponent == "Stats.pdf", "renommer vers le même nom ne crée pas « (2) »")
+check((try? CourseAnalysis.move(same, root: evRoot.appendingPathComponent("absent"))) == nil, "racine introuvable : rien n'est déplacé")
+let parsedEval = CourseAnalysis.parse(["propositions": [["chemin": "Maths/Évaluations/DS 1.pdf", "dossier": "Maths/Cours", "nouveauNom": "", "raison": "x"]]], knownPaths: ["Maths/Évaluations/DS 1.pdf"], folders: ["Maths", "Maths/Cours", "Maths/Évaluations"], evaluationPaths: ["Maths/Évaluations/DS 1.pdf"])
+check(parsedEval.isEmpty, "l'IA ne peut pas sortir une évaluation de son dossier")
+try? FileManager.default.removeItem(at: evRoot)
+for personal in [("Facture EDF", ""), ("scan", "IBAN FR76 3000 6000 0112 3456 7890 189"), ("lettre", "écrire à marie.dupont@example.com"), ("doc", "tél 06 12 34 56 78"), ("Passeport", "")] {
+    check(PrivacyGate.looksPersonal(name: personal.0, excerpt: personal.1), "pièce personnelle détectée : \(personal.0) \(personal.1)")
+}
+check(!PrivacyGate.looksPersonal(name: "Le pH", excerpt: "Séquence 1 : Chimie. Qu'est-ce que le pH ?"), "un cours n'est pas une pièce personnelle")
+
 if failures == 0 { print("Library : tout est bon.") } else { print("Library : \(failures) échec(s)."); exit(1) }

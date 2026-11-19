@@ -28,7 +28,7 @@ enum OriginalsArchive {
     /// « X corrigé »…), renvoie le nom de base normalisé « x ».
     static func completedBase(_ name: String) -> String? {
         let n = normalized(name)
-        let pattern = "^(.+?)\\s*[-–—(\\[]*\\s*(?:completee?|remplie?|corrigee?)\\s*\\d*\\s*[)\\]]?$"
+        let pattern = "^(.+?)\\s*[-–—(\\[]*\\s*(?:completee?|remplie?)\\s*\\d*\\s*[)\\]]?$"
         guard let re = try? NSRegularExpression(pattern: pattern),
               let m = re.firstMatch(in: n, range: NSRange(n.startIndex..., in: n)),
               let r = Range(m.range(at: 1), in: n) else { return nil }
@@ -111,7 +111,7 @@ enum OriginalsArchive {
         guard fm.fileExists(atPath: plan.completed.path) else { throw ArchiveError.completedMissing(plan.completed.lastPathComponent) }
         var dest = plan.destination
         var n = 2
-        let base = dest.deletingPathExtension().lastPathComponent
+        let base = plan.original.deletingPathExtension().lastPathComponent
         while fm.fileExists(atPath: dest.path) {
             dest = dest.deletingLastPathComponent().appendingPathComponent("\(base) (\(n))").appendingPathExtension(plan.original.pathExtension); n += 1
         }
@@ -124,6 +124,8 @@ enum OriginalsArchive {
     @discardableResult
     static func archiveAfterCompletion(original: URL, copy: URL, root: URL, ledger: CourseLedger) -> MoveRecord? {
         guard let dest = destination(for: original, root: root) else { return nil }
-        return try? archive(ArchivePlan(original: original, completed: copy, destination: dest), ledger: ledger)
+        let plan = ArchivePlan(original: original, completed: copy, destination: dest)
+        guard completedLooksSound(plan) else { return nil }
+        return try? archive(plan, ledger: ledger)
     }
 }

@@ -585,7 +585,8 @@ let realFiles: [(key: String, path: String)] = [
 ]
 
 func path(forKey key: String) -> String? {
-    realFiles.first { $0.key == key }?.path ?? (FileManager.default.fileExists(atPath: key) ? key : nil)
+    let p = realFiles.first { $0.key == key }?.path ?? key
+    return FileManager.default.fileExists(atPath: p) ? p : nil
 }
 
 /// Feuille vierge : copie du PDF sans les annotations FreeText (anciennes réponses), écrite dans `dir`.
@@ -673,6 +674,7 @@ func contactSheet(page: PDFPage, zones: [Zone], result: RenderResult, ppp: CGFlo
 }
 
 func scenarioReal(key: String, outDir: String, pages: [Int]?, mode: String, styleKey: String, sheets: Bool, dump: Bool, ppp: CGFloat = 2.1) {
+    guard path(forKey: key) != nil else { print("  [ignoré] cours absent du Mac : \(key)"); return }
     section("\(key) — réponses « \(mode) », style \(styleKey)")
     let t0 = Date()
     guard let run = runReal(key: key, outDir: outDir, pages: pages, mode: mode, style: WritingStyle.named(styleKey)) else { check(false, "\(key) : préparation impossible"); return }
@@ -746,8 +748,9 @@ func fingerprint(_ doc: PDFDocument) -> String {
 }
 
 func scenarioCycle(key: String, outDir: String, pages: [Int]? = nil) {
+    guard path(forKey: key) != nil else { print("  [ignoré] cours absent du Mac : \(key)"); return }
     section("\(key) — apply, remove, apply")
-    guard let (blank, zones) = analyzedZones(key: key, outDir: outDir, name: key + "_cycle", pages: pages, mode: "fit") else { check(false, "préparation impossible"); return }
+    guard let (blank, zones) = analyzedZones(key: key, outDir: outDir, name: key + "_cycle", pages: pages, mode: "fit") else { if path(forKey: key) == nil { print("  [ignoré] cours absent du Mac : \(key)") } else { check(false, "préparation impossible") }; return }
     let doc = PDFDocument(url: blank)!
     let pagesWithZones = Set(zones.map { $0.page }).sorted()
     let before = fingerprint(doc)
@@ -818,7 +821,7 @@ func scenarioCycle(key: String, outDir: String, pages: [Int]? = nil) {
 
 func scenarioExport(key: String, outDir: String, pages: [Int]? = nil) {
     section("\(key) — export annoté et aplati")
-    guard let (blank, zones) = analyzedZones(key: key, outDir: outDir, name: key + "_export", pages: pages, mode: "fit") else { check(false, "préparation impossible"); return }
+    guard let (blank, zones) = analyzedZones(key: key, outDir: outDir, name: key + "_export", pages: pages, mode: "fit") else { if path(forKey: key) == nil { print("  [ignoré] cours absent du Mac : \(key)") } else { check(false, "préparation impossible") }; return }
     let style = WritingStyle.bleuImprime
 
     let live = PDFDocument(url: blank)!

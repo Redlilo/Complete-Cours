@@ -197,6 +197,7 @@ enum RevisionPrompts {
     static func sanitize(_ s: String) -> String {
         s.replacingOccurrences(of: "</?\\s*document[^>]*>", with: " ", options: [.regularExpression, .caseInsensitive])
             .replacingOccurrences(of: "</?\\s*(fiches?|reponses?|copies?)[^>]*>", with: " ", options: [.regularExpression, .caseInsensitive])
+            .replacingOccurrences(of: "</?\\s*preference[^>]*>", with: " ", options: [.regularExpression, .caseInsensitive])
             .replacingOccurrences(of: "===", with: "—")
     }
 

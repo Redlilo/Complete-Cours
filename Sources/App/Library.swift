@@ -37,6 +37,10 @@ final class LibraryModel: ObservableObject {
             root = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Desktop/Cours")
         }
         expanded = Set(defaults.stringArray(forKey: Self.expandedKey) ?? [])
+        // Une copie complétée enregistrée à côté de son original apparaît tout de suite.
+        NotificationCenter.default.addObserver(forName: .courseCopySaved, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in self?.refresh() }
+        }
         // Un cours sélectionné devient « récent », d'où que vienne la sélection.
         $selected.dropFirst().receive(on: DispatchQueue.main).sink { [weak self] file in
             MainActor.assumeIsolated {
@@ -220,7 +224,7 @@ struct LibraryView: View {
     @State private var showDuplicates = false
     @ObservedObject private var nav = Navigator.shared
     @State private var showAutoIntake = false
-    @AppStorage("archiveOriginals") private var archiveAuto = true
+    @AppStorage(Pref.archiveOriginals) private var archiveAuto = true
     @State private var showAnalysis = false
     @State private var showHistory = false
     @ObservedObject private var history = MoveHistory.shared
@@ -259,7 +263,7 @@ struct LibraryView: View {
         .sheet(isPresented: $showHistory) { MoveHistorySheet() }
         .sheet(isPresented: $showArchive) { ArchiveSheet() }
         .sheet(isPresented: $showDuplicates) { DuplicatesSheet() }
-        .onChange(of: nav.showArchive) { _, wanted in if wanted { showArchive = true; nav.showArchive = false } }
+        .onChange(of: nav.showArchive, initial: true) { _, wanted in if wanted { showArchive = true; nav.showArchive = false } }
         .sheet(isPresented: $showAutoIntake) { AutoIntakeSheet() }
         .overlay { if dropTargeted { RoundedRectangle(cornerRadius: 14).strokeBorder(Color.accentColor, style: StrokeStyle(lineWidth: 3, dash: [10, 6])).padding(6).allowsHitTesting(false) } }
         .onDrop(of: [.fileURL], isTargeted: $dropTargeted) { providers in
@@ -333,7 +337,7 @@ struct LibraryView: View {
             if intake.busy { ProgressView().controlSize(.small) } else { Image(systemName: "tray.and.arrow.down") }
             Text(text).font(.callout).lineLimit(3)
             Spacer()
-            if !intake.busy { Button("Annuler le rangement") { intake.undo() } }
+            if !intake.busy, intake.lastMove != nil { Button("Annuler le rangement") { intake.undo() } }
             Button { intake.notice = nil } label: { Image(systemName: "xmark") }.buttonStyle(.plain)
         }
         .padding(10).background(Color.accentColor.opacity(0.12))
@@ -472,7 +476,7 @@ private struct FileRowView: View {
         .onTapGesture { library.select(file) }
         .contextMenu {
             if !file.isEvaluation { Button("Compléter le cours") { Recents.shared.touch(file.url); navigator.complete(file.url) } }
-            Button("Fiche de révision") { Recents.shared.touch(file.url); navigator.makeSheet(file.url) }
+            if !file.isEvaluation { Button("Fiche de révision") { Recents.shared.touch(file.url); navigator.makeSheet(file.url) } }
             Button("Corrigé d'évaluation (après la note)") { Recents.shared.touch(file.url); navigator.correct(file.url) }
             Divider()
             Button("Afficher dans le Finder") { NSWorkspace.shared.activateFileViewerSelecting([file.url]) }

@@ -62,14 +62,15 @@ final class Navigator: ObservableObject {
     func makeSheet(_ url: URL) {
         mode = .fiches
         let revision = RevisionModel.live
-        revision.open(url)
+        // même cours : on garde la fiche, les cartes et les questions déjà créées (elles ont consommé l'IA)
+        if revision.documentURL?.standardizedFileURL != url.standardizedFileURL { revision.open(url) }
         revision.tab = .fiche
     }
 
     func correct(_ url: URL) {
         mode = .evaluations
         let revision = RevisionModel.live
-        revision.open(url)
+        if revision.documentURL?.standardizedFileURL != url.standardizedFileURL { revision.open(url) }
         revision.tab = .apres
     }
 }

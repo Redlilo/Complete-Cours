@@ -6,6 +6,8 @@ enum Pref {
     static let engine = "engine"
     static let claudeModel = "claudeModel"
     static let humanize = "humanize"
+    /// Après une complétion en lot, l'original vide est rangé dans « _Originaux avant completion ».
+    static let archiveOriginals = "archiveOriginals"
     static let humanizeTone = "humanizeTone"
     static let writingStyle = "writingStyle"
     static let flatten = "flattenOnExport"

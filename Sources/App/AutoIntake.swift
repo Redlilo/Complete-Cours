@@ -17,7 +17,7 @@ final class AutoIntake: NSObject, ObservableObject, UNUserNotificationCenterDele
     static let enabledKey = "autoIntakeEnabled"
     static let folderKey = "autoIntakeFolder"
     static let recentKey = "autoIntakeRecent"
-    static let categoryID = "DEPOT_RANGE", undoActionID = "ANNULER"
+    nonisolated static let categoryID = "DEPOT_RANGE", undoActionID = "ANNULER"
 
     @Published private(set) var enabled: Bool
     @Published private(set) var folder: URL

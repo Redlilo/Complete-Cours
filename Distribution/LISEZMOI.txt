@@ -113,6 +113,8 @@ L'app réécrit les définitions et les questions ouvertes avec des mots plus si
 6. CONFIDENTIALITÉ
 ------------------
 - Avec Claude : les pages du PDF (image et texte) sont envoyées à Anthropic pour être analysées.
+  Pour ranger un cours (bouton « Ajouter » ou « Analyser »), seuls le nom du fichier et le début de sa
+  première page partent. Les évaluations ne sont jamais lues par l'IA.
   N'utilise pas ce mode avec un document contenant des informations personnelles que tu ne veux pas
   partager.
 - Avec Apple Intelligence : tout reste sur ton Mac.

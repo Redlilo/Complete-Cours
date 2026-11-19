@@ -80,7 +80,8 @@ enum Prompts {
         }
         s += "Date du jour : \(r.todayText)\n\n"
 
-        let t = r.transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+        // le texte du PDF est une donnée : il ne peut pas refermer le bloc « """ » ni imiter nos balises
+        let t = r.transcript.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "\"\"\"", with: "'''")
         if t.isEmpty {
             s += "Aucun texte n'a pu être extrait de cette page : lis l'image.\n\n"
         } else {
@@ -158,7 +159,7 @@ enum Prompts {
         case .eleve:
             return "Ton demandé : style élève. Phrases courtes, mots simples, « on » et « ça » permis."
         case .precis:
-            return "Ton demandé : précis et soigné. Phrases complètes et bien construites, vocabulaire technique du cours, pas de « ça » ni de « je » sauf si la question les appelle ; toujours naturel et jamais plus long que l'original."
+            return "Ton demandé (il prime sur le style élève décrit plus haut) : précis et soigné. Phrases complètes et bien construites, vocabulaire technique du cours, pas de « ça » ni de « je » sauf si la question les appelle ; toujours naturel et jamais plus long que l'original."
         }
     }
 

@@ -37,10 +37,18 @@ Sources/Core/       (module partagé, compilé avec l'app et avec les outils de 
   ClaudeEngine.swift    moteur Claude (API Messages, HTTP direct, images)                 [agent « claude »]
   AppleEngine.swift     moteur Apple Intelligence (FoundationModels, texte seul)          [agent « apple »]
   ClaudeCodeEngine.swift  moteur « Claude (mon compte) » : tout le fichier est sous #if COMPTE_PERSO (absent de la version distribuée)
+  CourseAnalysis.swift  « Analyser » / « Ajouter » : lecture locale de la page 1, demande à l'IA, déplacement sans écrasement
+  CourseLedger.swift    journal persistant : rangements annulables, complétions, cache d'analyse (Application Support)
+  OriginalsArchive.swift  « Ranger les originaux vides » (paires vide/complétée, miroir dans _Originaux avant completion)
+  DuplicateFinder.swift  doublons : octets identiques (SHA-256) et texte très semblable ; Corbeille, jamais de suppression
+  ContentIndex.swift    index local du contenu des PDF (recherche par mot), cache persistant, jamais d'évaluation
+  CompletionStatus.swift  trous encore vides d'un PDF (annotations, encre, faux trous écartés)
+  CostEstimate.swift    estimation de coût avant un lot de complétion
+  FolderWatcher.swift   dépôt automatique : surveillance d'un dossier, filtre de vie privée, rangement
   LibraryTree.swift     bibliothèque : arborescence des PDF du dossier des cours (même rangement que sur le disque),
                         lignes affichées, recherche, reconnaissance des évaluations (testé par Tools/Tests/Library)
   AnswerRenderer.swift  écriture des réponses dans le PDF + export                        [agent « rendu »]
-Sources/App/        l'application SwiftUI : MainShell (barre latérale 4 parties) · Navigation (modes, passerelles) · Library (bibliothèque)                                                [agent « interface »]
+Sources/App/        l'application SwiftUI (aussi : Batch.swift complétion en lot, Archive.swift, Duplicates.swift, AutoIntake.swift, Recents.swift, Style.swift look commun) : MainShell (barre latérale 4 parties) · Navigation (modes, passerelles) · Library (bibliothèque)                                                [agent « interface »]
 Tools/Harness/      outil CLI de test de la détection (voir plus bas)                    [Claude principal]
 Tools/Tests/<x>/    tests propres à chaque agent
 build.sh, Resources/, Distribution/LISEZMOI.txt, README.md   empaquetage .app, icône, doc                          [agent « paquet »]

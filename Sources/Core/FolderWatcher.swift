@@ -239,13 +239,8 @@ enum AutoIntakeProcessor {
         return s
     }
 
-    /// En-tête qui annonce une évaluation (« Contrôle… », « Évaluation… », « DS… »).
-    static func headerLooksLikeEvaluation(_ excerpt: String) -> Bool {
-        // par prudence : un de ces mots n'importe où dans les 300 premiers caractères suffit (mieux vaut une fausse alerte
-        // qu'une évaluation envoyée à l'IA)
-        let head = CostEstimate.fold(String(excerpt.trimmingCharacters(in: .whitespacesAndNewlines).prefix(300)))
-        return head.range(of: "\\b(controle|evaluation|interrogation|devoir surveille|epreuve|bac blanc|eval)\\b|\\bds\\s*n?\\s*\\d", options: .regularExpression) != nil
-    }
+    /// En-tête qui annonce une évaluation (source unique : LibraryTree).
+    static func headerLooksLikeEvaluation(_ excerpt: String) -> Bool { LibraryTree.headerLooksLikeEvaluation(excerpt) }
 
     static func process(_ url: URL, watchedFolder: URL, root: URL, ledger: CourseLedger,
                         generator: StructuredGenerator?) async -> IntakeResult {
@@ -261,6 +256,8 @@ enum AutoIntakeProcessor {
             excerpt = CourseAnalysis.firstPageText(src)
             if headerLooksLikeEvaluation(excerpt) { isEval = true; excerpt = "" }
         }
+        // document personnel (facture, papiers d'identité, IBAN, e-mail…) : jamais envoyé à l'IA, laissé où il est
+        if !isEval, PrivacyGate.looksPersonal(name: name, excerpt: excerpt) { return .notACourse }
         let folders = CourseAnalysis.folderCatalog(root: root)
         let digest = CourseDigest(path: "À ranger/\(src.lastPathComponent)", isEvaluation: isEval, excerpt: excerpt)
         let raw: String
@@ -272,14 +269,32 @@ enum AutoIntakeProcessor {
               let isCourse = dict["estUnCours"] as? Bool else { return .failed("Réponse de l'IA illisible.") }
         if !isCourse && !isEval { return .notACourse }
         // pas de dossier convenable : le fichier reste où il est (jamais de nouvelle « matière » inventée)
-        guard var suggestion = CourseAnalysis.parse(parsed, knownPaths: [digest.path], folders: folders).first else { return .unavailable }
+        guard var suggestion = CourseAnalysis.parse(parsed, knownPaths: [digest.path], folders: folders, evaluationPaths: isEval ? [digest.path] : []).first else {
+            return .failed("Aucun dossier convenable : le fichier reste où il est.")
+        }
         // un nom de scan (« Scan2026… », « IMG_… ») est remplacé ; un nom choisi par l'élève est gardé
         let junk = name.range(of: "^(scan|img|image|document|sans titre|untitled)[ _-]*\\d", options: [.regularExpression, .caseInsensitive]) != nil
         if !junk { suggestion.newName = "" }
         do {
-            let to = try CourseAnalysis.move(suggestion, root: root, source: src)
+            let to = try CourseAnalysis.move(suggestion, root: root, source: src, sourceIsEvaluation: isEval)
             let record = ledger.recordMove(from: src, to: to, origin: .depot)
             return .filed(record: record, folder: suggestion.folder, name: to.lastPathComponent)
         } catch { return .failed(error.localizedDescription) }
+    }
+}
+
+
+/// Filtre local avant tout envoi à l'IA depuis un dossier partagé comme Téléchargements : un document qui ressemble à
+/// une pièce personnelle n'est pas lu plus loin et n'est jamais envoyé.
+enum PrivacyGate {
+    private static let patterns = [
+        "\\b[a-z]{2}\\d{2}(?:\\s?[a-z0-9]{4}){3,}\\b",                          // IBAN
+        "[a-z0-9._%+-]+@[a-z0-9.-]+\\.[a-z]{2,}",                                  // e-mail
+        "(?:\\+33|\\b0)\\s?[1-9](?:[\\s.]?\\d{2}){4}\\b",                          // téléphone
+        "\\b(facture|releve de compte|bulletin de paie|bulletin de salaire|avis d.imposition|passeport|carte d.identite|carte nationale|ordonnance|securite sociale|e-?billet|billet|reservation|devis|attestation|contrat|certificat medical)\\b",
+    ]
+    static func looksPersonal(name: String, excerpt: String) -> Bool {
+        let text = CostEstimate.fold(name + " " + excerpt)
+        return patterns.contains { text.range(of: $0, options: .regularExpression) != nil }
     }
 }

@@ -106,5 +106,14 @@ check(Prompts.humanizeSystem.components(separatedBy: "- Avant :").count - 1 == 3
 check(!Prompts.humanizeSystem.contains("IMPORTANT"), "pas de majuscules criées (humanisation)")
 check(Prompts.todayText().contains("/"), "todayText")
 
+
+// Ton des réponses humanisées : présent dans le message, différent selon le choix, jamais dans le texte système
+let toneItem = { (t: HumanizeTone) in HumanizeItem(id: 1, kind: .question, question: "Pourquoi ?", answer: "Parce que.", maxChars: 40, tone: t) }
+let userEleve = Prompts.humanizeUserText([toneItem(.eleve)]), userPrecis = Prompts.humanizeUserText([toneItem(.precis)])
+check(userEleve.contains("Ton demandé : style élève") && !userEleve.contains("précis et soigné"), "ton « Style élève » dans le message")
+check(userPrecis.contains("précis et soigné") && !userPrecis.contains("Ton demandé : style élève"), "ton « Précis » dans le message")
+check(!Prompts.humanizeSystem.contains("Ton demandé"), "le texte système reste le même pour tous les tons")
+check(userPrecis.components(separatedBy: "\n\n").count == 2, "le message garde sa forme (consigne puis JSON)")
+
 print("\n\(checks - fails)/\(checks) contrôles réussis")
 exit(fails == 0 ? 0 : 1)

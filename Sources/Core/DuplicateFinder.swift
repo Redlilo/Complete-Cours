@@ -94,7 +94,11 @@ enum DuplicateFinder {
         var clusters: [Int: [Int]] = [:]
         for i in fingerprints.indices { clusters[root(i), default: []].append(i) }
         for (r, members) in clusters where members.count > 1 {
-            let files = members.map { fingerprints[$0].0 }
+            // une version vide et sa version complétée ne doivent jamais se retrouver dans le même groupe (fusion transitive)
+            var kept: [Int] = []
+            for m in members where !kept.contains(where: { intendedPair(fingerprints[$0].0, fingerprints[m].0, completions: completions) }) { kept.append(m) }
+            guard kept.count > 1 else { continue }
+            let files = kept.map { fingerprints[$0].0 }
             let percent = Int(((bestSimilarity[r] ?? similarityThreshold) * 100).rounded(.down))
             groups.append(DuplicateGroup(kind: .tresSemblables(percent: percent), files: files, keep: suggestedKeep(files).url))
         }
@@ -131,7 +135,7 @@ enum DuplicateFinder {
                 words += tokens(text)
             }
         }
-        guard words.count >= minimumWords else { return nil }
+        guard words.count >= minimumWords, !LibraryTree.headerLooksLikeEvaluation(words.prefix(60).joined(separator: " ")) else { return nil }
         var set = Set<Int>()
         for i in 0...(words.count - 4) {
             var h = Hasher()

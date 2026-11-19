@@ -84,8 +84,14 @@ final class CourseLedger: @unchecked Sendable {
         load()
     }
 
+    private var readOnly = false
+
     private func load() {
-        guard let data = try? Data(contentsOf: fileURL) else { return }
+        guard let data = try? Data(contentsOf: fileURL) else {
+            // le fichier existe mais n'est pas lisible (droits…) : on ne l'écrase pas avec un journal vide
+            if FileManager.default.fileExists(atPath: fileURL.path) { readOnly = true }
+            return
+        }
         let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
         if let s = try? decoder.decode(Store.self, from: data) { store = s; return }
         wasCorrupt = true
@@ -96,6 +102,7 @@ final class CourseLedger: @unchecked Sendable {
 
     /// À appeler avec le verrou pris.
     private func save() {
+        if readOnly { lastSaveError = "Le journal existe mais n'est pas lisible : il n'est pas modifié."; return }
         let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .iso8601; encoder.outputFormatting = [.sortedKeys]
         do {
             try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)

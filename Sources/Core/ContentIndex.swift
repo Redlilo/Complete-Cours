@@ -136,6 +136,8 @@ final class ContentIndex: @unchecked Sendable {
             let raw = doc.page(at: i)?.string ?? ""
             pages.append(String(Self.normalize(raw).prefix(Self.maxCharsPerPage)))
         }
+        // une évaluation au nom neutre se reconnaît à son en-tête : jamais indexée
+        if LibraryTree.headerLooksLikeEvaluation(pages.first ?? "") { return ([], false) }
         let letters = pages.reduce(0) { $0 + $1.filter { !$0.isWhitespace }.count }
         guard letters < Self.scanThreshold, doc.pageCount > 0 else { return (pages, false) }
         for i in 0..<min(Self.ocrPageLimit, doc.pageCount) {

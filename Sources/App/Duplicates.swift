@@ -4,7 +4,7 @@ import AppKit
 /// « Supprimer les doublons » : lit tous les PDF, regroupe les doublons, met à la Corbeille ce que l'élève valide.
 @MainActor
 final class DuplicatesModel: ObservableObject {
-    enum Phase: Equatable { case idle, reading(Double, String), ready, done(String) }
+    enum Phase: Equatable { case idle, reading(Double, String), ready, done(String), stopped }
 
     @Published var phase: Phase = .idle
     @Published var groups: [DuplicateGroup] = []
@@ -13,19 +13,21 @@ final class DuplicatesModel: ObservableObject {
     private var task: Task<Void, Never>?
 
     func run() {
-        guard phase == .idle || phase == .ready || { if case .done = phase { return true }; return false }() else { return }
+        if case .reading = phase { return }
         let library = LibraryModel.shared
         let files = library.files, root = library.root
         let completions = CourseLedger.shared.completions
         groups = []; keep = [:]; removeSimilar = []
         phase = .reading(0, "Lecture des PDF…")
         task = Task {
-            let found = await Task.detached(priority: .userInitiated) {
+            let work = Task.detached(priority: .userInitiated) {
                 DuplicateFinder.find(files: files, root: root, completions: completions,
                                      isCancelled: { Task.isCancelled },
                                      progress: { f, label in Task { @MainActor in if case .reading = self.phase { self.phase = .reading(f, label) } } })
-            }.value
-            if Task.isCancelled { phase = .idle; return }
+            }
+            // « Arrêter » ou la fermeture de la fenêtre doivent vraiment arrêter la lecture des PDF
+            let found = await withTaskCancellationHandler { await work.value } onCancel: { work.cancel() }
+            if Task.isCancelled { phase = .stopped; return }
             groups = found
             keep = Dictionary(uniqueKeysWithValues: found.map { ($0.id, $0.keep) })
             phase = .ready
@@ -78,6 +80,7 @@ struct DuplicatesSheet: View {
         }
         .frame(minWidth: 720, minHeight: 520)
         .onAppear { model.run() }
+        .onDisappear { model.cancel() }
     }
 
     @ViewBuilder private var content: some View {
@@ -88,6 +91,11 @@ struct DuplicatesSheet: View {
                 ProgressView(value: f).frame(maxWidth: 360)
                 Text(label).foregroundStyle(.secondary).lineLimit(1)
                 Button("Arrêter") { model.cancel() }
+            }.frame(maxWidth: .infinity, maxHeight: .infinity)
+        case .stopped:
+            VStack(spacing: 10) {
+                Text("Recherche arrêtée").font(.headline)
+                Button("Relancer la recherche") { model.run() }.buttonStyle(.borderedProminent)
             }.frame(maxWidth: .infinity, maxHeight: .infinity)
         case .done(let message):
             VStack(spacing: 10) {
