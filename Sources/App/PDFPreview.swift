@@ -85,15 +85,38 @@ final class ZoneOverlayProvider: NSObject, PDFPageOverlayViewProvider {
     private var zonesByPage: [Int: [Zone]] = [:]
     private var selectedID: Int?
     private var draft: (page: Int, rect: CGRect)?
+    /// Géométrie des pages affichées : les zones sont dans l'espace de la page tournée, l'aperçu dessine dans l'espace brut.
+    private var geometries: [Int: PageGeometry] = [:]
+
+    /// Zones d'une page dans l'espace brut de la page (page tournée : chaque zone devient un cadre).
+    private func rawZones(_ index: Int) -> [Zone] {
+        let zones = zonesByPage[index] ?? []
+        guard let geo = geometries[index], geo.rotation != 0 else { return zones }
+        return zones.map { z in
+            var c = z
+            let h = max(z.textHeight * 1.25, 11)
+            let r = z.box ?? CGRect(x: z.rect.minX, y: z.rect.minY, width: z.rect.width, height: max(z.rect.height, h))
+            c.box = geo.pageRect(fromZone: r)
+            c.lines = []
+            return c
+        }
+    }
+
+    private func rawDraft(_ index: Int) -> CGRect? {
+        guard let d = draft, d.page == index else { return nil }
+        guard let geo = geometries[index], geo.rotation != 0 else { return d.rect }
+        return geo.pageRect(fromZone: d.rect)
+    }
 
     func pdfView(_ view: PDFView, overlayViewFor page: PDFPage) -> NSView? {
         let box = page.bounds(for: view.displayBox)
         let overlay = ZoneOverlayView(frame: box)
         overlay.origin = box.origin
         if let index = view.document?.index(for: page) {
-            overlay.zones = zonesByPage[index] ?? []
+            geometries[index] = PageGeometry(page: page)
+            overlay.zones = rawZones(index)
             overlay.selectedID = selectedID
-            overlay.draft = (draft?.page == index) ? draft?.rect : nil
+            overlay.draft = rawDraft(index)
             live[index] = overlay
         }
         return overlay
@@ -107,18 +130,21 @@ final class ZoneOverlayProvider: NSObject, PDFPageOverlayViewProvider {
         zonesByPage = Dictionary(grouping: zones, by: { $0.page })
         self.selectedID = selectedID
         for (index, overlay) in live {
-            overlay.zones = zonesByPage[index] ?? []
+            overlay.zones = rawZones(index)
             overlay.selectedID = selectedID
         }
     }
 
     func setDraft(page: Int?, rect: CGRect?) {
         if let page, let rect { draft = (page, rect) } else { draft = nil }
-        for (index, overlay) in live { overlay.draft = (draft?.page == index) ? draft?.rect : nil }
+        for (index, overlay) in live {
+            overlay.draft = rawDraft(index)
+        }
     }
 
     /// Zone touchée par un point de la page `index` (la plus petite d'abord, pour les zones imbriquées).
-    func zoneID(at point: CGPoint, page index: Int) -> Int? {
+    func zoneID(at rawPoint: CGPoint, page index: Int) -> Int? {
+        let point = geometries[index].map { $0.rotation == 0 ? rawPoint : $0.zonePoint(fromPage: rawPoint) } ?? rawPoint
         let hits = (zonesByPage[index] ?? []).filter { z in
             let rects = z.box.map { [$0] } ?? z.lines.map {
                 CGRect(x: $0.x0, y: min($0.y, $0.yEnd), width: $0.width, height: max(z.textHeight * 1.25, 11) + abs($0.yEnd - $0.y))
@@ -166,7 +192,8 @@ final class PreviewPDFView: PDFView {
     override func mouseDragged(with event: NSEvent) {
         guard drawingEnabled, let start = dragStart, let doc = document else { return super.mouseDragged(with: event) }
         let rect = clampedRect(from: start, event: event)
-        provider?.setDraft(page: doc.index(for: start.page), rect: rect)
+        let geo = PageGeometry(page: start.page)
+        provider?.setDraft(page: doc.index(for: start.page), rect: geo.rotation == 0 ? rect : geo.zoneRect(fromPage: rect))
     }
 
     override func mouseUp(with event: NSEvent) {
@@ -176,7 +203,9 @@ final class PreviewPDFView: PDFView {
         provider?.setDraft(page: nil, rect: nil)
         // un simple clic ou un trait minuscule n'est pas une zone
         guard rect.width >= 10, rect.height >= 6 else { return }
-        onRectDrawn?(doc.index(for: start.page), rect)
+        let index = doc.index(for: start.page)
+        let geo = PageGeometry(page: start.page)
+        onRectDrawn?(index, geo.rotation == 0 ? rect : geo.zoneRect(fromPage: rect))
     }
 
     private func clampedRect(from start: (page: PDFPage, point: CGPoint), event: NSEvent) -> CGRect {

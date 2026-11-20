@@ -1,7 +1,7 @@
 import Foundation
 import PDFKit
 
-/// Une ligne de texte de la page (espace page PDF).
+/// Une ligne de texte de la page (espace des zones : la page telle qu'elle s'affiche).
 struct TextLine {
     var text: String
     var bbox: CGRect
@@ -54,10 +54,13 @@ final class TextLayout {
         guard let all = page.selection(for: page.bounds(for: .cropBox)) else { return TextLayout(lines: [], page: page) }
         var cursor = 0
         var out: [TextLine] = []
+        let frame = PageGeometry(page: page)
         for ls in all.selectionsByLine() {
             let text = (ls.string ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
             if text.isEmpty { continue }
-            let b = ls.bounds(for: page)
+            let raw = ls.bounds(for: page)
+            if raw.isNull || raw.isEmpty { continue }
+            let b = frame.zoneRect(fromPage: raw)
             if b.isNull || b.isEmpty || b.width.isNaN || b.height.isNaN || b.height > 200 { continue }
 
             var start: Int? = nil
@@ -191,7 +194,7 @@ final class TextLayout {
             let prefix = String(chars[0..<lo]).utf16.count
             let length = String(chars[lo..<hi]).utf16.count
             if let sel = page.selection(for: NSRange(location: start + prefix, length: length)) {
-                let b = sel.bounds(for: page)
+                let b = PageGeometry(page: page).zoneRect(fromPage: sel.bounds(for: page))
                 if !b.isNull, !b.isEmpty, b.width.isFinite, b.height < 80 { return b }
             }
         }

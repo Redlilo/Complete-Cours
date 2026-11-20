@@ -379,6 +379,7 @@ final class CoursModel: ObservableObject {
 
     /// Retient une correction de l'élève (sans effet pour une évaluation ou une zone sans texte voisin).
     private func remember(_ zone: Zone, _ action: ZoneLearning.Action) {
+        guard zone.source != .manuel else { return }     // une zone dessinée à la main n'a pas de signature réutilisable
         learning.record(action, for: zone, documentName: documentName, path: learningPath)
         learnedCount = learning.count
     }
@@ -773,11 +774,7 @@ final class CoursModel: ObservableObject {
     }
 
     func addManualZone(pageIndex: Int, rect: CGRect) async {
-        guard let url = fileURL, let doc = document, let page = doc.page(at: pageIndex), !isBusy else { return }
-        guard page.rotation % 360 == 0 else {
-            showNotice(.warning, "La page \(pageIndex + 1) est tournée : on ne peut pas y ajouter de zone pour l'instant.")
-            return
-        }
+        guard let url = fileURL, let doc = document, doc.page(at: pageIndex) != nil, !isBusy else { return }
         let generation = documentGeneration
         isAddingZone = true
         defer { isAddingZone = false }

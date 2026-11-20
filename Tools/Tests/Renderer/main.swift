@@ -515,12 +515,14 @@ func scenarioEdgeCases(outDir: String) {
     let r4 = AnswerRenderer.apply(zones: [hugeBox], to: copyOf(doc), style: .manuscrit)
     check(r4.overflowIDs.contains(hugeBox.id) && Date().timeIntervalSince(t0) < 5, "réponse de 6 000 caractères dans un cadre : tronquée, signalée, le tout en moins de 5 s")
 
-    // page tournée : non gérée, signalée
-    let rotated = makePDF { _ in }
-    rotated.page(at: 0)!.rotation = 90
-    let rz = lineZone(400, "Page tournée")
-    let r5 = AnswerRenderer.apply(zones: [rz], to: rotated, style: .bleuImprime)
-    check(r5.skippedIDs == [rz.id], "page tournée de 90° : zone ignorée et signalée")
+    // page tournée : prise en charge (zones dans l'espace de la page affichée) ; le détail est dans Tools/Tests/Detector
+    for rot in [90, 180, 270] {
+        let rotated = makePDF { _ in }
+        rotated.page(at: 0)!.rotation = rot
+        let rz = lineZone(400, "Page tournée")
+        let r5 = AnswerRenderer.apply(zones: [rz], to: rotated, style: .bleuImprime)
+        check(r5.skippedIDs.isEmpty && !(r5.annotations[rz.id] ?? []).isEmpty, "page tournée de \(rot)° : réponse écrite, aucune zone ignorée")
+    }
 }
 
 // MARK: - Réponses d'exemple

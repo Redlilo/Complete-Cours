@@ -68,16 +68,19 @@ enum AnswerRenderer {
             guard zone.enabled, zone.kind != .ignorer else { continue }
             let tokens = InkText.tokens(zone.answer)
             guard !tokens.isEmpty else { continue }
-            guard let page = document.page(at: zone.page), page.rotation % 360 == 0 else {
+            guard let page = document.page(at: zone.page) else {
                 result.skippedIDs.insert(zone.id)
                 continue
             }
 
+            // les zones sont dans l'espace de la page affichée ; annotations et champs, dans l'espace page brut
+            let frame = PageGeometry(page: page)
+
             // 1. champ de formulaire : on le retrouve dans CE document par page + rectangle (Zone.widget est celui d'une autre copie)
             if zone.source == .formulaire, let box = zone.box {
                 if widgetsByPage[zone.page] == nil { widgetsByPage[zone.page] = InkFields.textWidgets(of: page) }
-                if let widget = InkFields.match(box, in: widgetsByPage[zone.page] ?? [], excluding: usedWidgets) {
-                    if let filled = InkFields.fill(widget, page: page, pageIndex: zone.page, tokens: tokens, ink: ink) {
+                if let widget = InkFields.match(frame.pageRect(fromZone: box), in: widgetsByPage[zone.page] ?? [], excluding: usedWidgets) {
+                    if let filled = InkFields.fill(widget, page: page, frame: frame, pageIndex: zone.page, tokens: tokens, ink: ink) {
                         usedWidgets.insert(ObjectIdentifier(widget))
                         result.fields[zone.id] = filled.state
                         result.fontSizes[zone.id] = filled.size
@@ -106,7 +109,7 @@ enum AnswerRenderer {
             // 3. annotations
             var added: [PDFAnnotation] = []
             for (n, piece) in placement.pieces.enumerated() {
-                let annotation = InkAnnotation.make(piece, font: placement.font, color: ink.color)
+                let annotation = InkAnnotation.make(piece, font: placement.font, color: ink.color, frame: frame)
                 _ = annotation.setValue("\(annotationAuthor)-\(zone.id)-\(n)", forAnnotationKey: .name)
                 page.addAnnotation(annotation)
                 added.append(annotation)
@@ -502,13 +505,15 @@ fileprivate enum InkAnnotation {
     static let leftInset: CGFloat = 2
 
     /// Annotation FreeText d'une ligne, sans fond ni bordure, dont le texte a sa ligne de base exactement à `piece.baseline`.
-    static func make(_ piece: InkPiece, font: InkFont, color: NSColor) -> PDFAnnotation {
+    /// Page tournée : la mise en page se fait dans l'espace de la page affichée (texte droit), puis le rectangle de
+    /// l'annotation est reporté dans l'espace page brut ; PDFKit dessine le texte droit dans ce rectangle tourné.
+    static func make(_ piece: InkPiece, font: InkFont, color: NSColor, frame: PageGeometry) -> PDFAnnotation {
         let offset = InkCalibration.baselineOffset(font)
         let width = ceil(font.width(piece.text)) + 2 * leftInset + 4          // 4 pt de sécurité : PDFKit passe à la ligne sinon
         let height = ceil(offset + font.descent * 1.4 + 2)                     // sinon les jambages sont rognés
         let top = piece.baseline + offset
         let bounds = CGRect(x: piece.x - leftInset, y: top - height, width: width, height: height)
-        return freeText(piece.text, font: font.ns, color: color, bounds: bounds)
+        return freeText(piece.text, font: font.ns, color: color, bounds: frame.pageRect(fromZone: bounds))
     }
 
     static func freeText(_ text: String, font: NSFont, color: NSColor, bounds: CGRect) -> PDFAnnotation {
@@ -632,11 +637,11 @@ fileprivate enum InkFields {
 
     /// Écrit la réponse dans le champ, avec la police et la couleur du style, à la plus grande taille entière qui tient
     /// et qui s'affiche vraiment (vérifié sur un rendu du champ). Renvoie nil, champ rétabli, s'il n'affiche rien.
-    static func fill(_ w: PDFAnnotation, page: PDFPage, pageIndex: Int, tokens: [String], ink: InkStyle)
+    static func fill(_ w: PDFAnnotation, page: PDFPage, frame: PageGeometry, pageIndex: Int, tokens: [String], ink: InkStyle)
         -> (state: FilledField, size: CGFloat, overflow: Bool)? {
         let state = FilledField(widget: w, pageIndex: pageIndex, previousValue: w.widgetStringValue, previousFont: w.font,
                                 previousFontColor: w.fontColor, previousMaxLength: w.maximumLength)
-        let b = w.bounds
+        let b = frame.zoneRect(fromPage: w.bounds)             // dimensions du champ tel qu'on le voit
         let multiline = w.isMultiline
         let availWidth = max(8, b.width - 8)                   // PDFKit garde 3 pt de chaque côté ; 1 pt de réserve
         let minSize = min(InkLayout.minSize, ink.maxSize)
@@ -682,7 +687,7 @@ fileprivate enum InkFields {
             guard !lines.isEmpty else { continue }
             let text = lines.joined(separator: " ")
             put(text, font)
-            if (w.widgetStringValue ?? "") == text, lastWordShows(w, page: page, text: text) {
+            if (w.widgetStringValue ?? "") == text, lastWordShows(w, page: page, frame: frame, text: text) {
                 return (state, font.size, wrapped.truncated || !complete)
             }
         }
@@ -691,11 +696,11 @@ fileprivate enum InkFields {
     }
 
     /// Le dernier mot de `text` est-il visible dans le champ ? On compare le rendu du champ avec et sans ce mot.
-    private static func lastWordShows(_ w: PDFAnnotation, page: PDFPage, text: String) -> Bool {
+    private static func lastWordShows(_ w: PDFAnnotation, page: PDFPage, frame: PageGeometry, text: String) -> Bool {
         let withText = text
         let words = text.split(separator: " ")
         let without = words.dropLast().joined(separator: " ")
-        let rect = w.bounds.insetBy(dx: -2, dy: -2)
+        let rect = frame.zoneRect(fromPage: w.bounds).insetBy(dx: -2, dy: -2)
         guard let a = InkSnapshot.gray(page: page, rect: rect, scale: 5) else { return true }   // pas de rendu : on fait confiance
         let saved = w.widgetStringValue
         w.widgetStringValue = without
@@ -710,8 +715,10 @@ fileprivate enum InkFields {
 
 /// Rendu d'un petit rectangle d'une page (annotations comprises), en niveaux de gris.
 fileprivate enum InkSnapshot {
+    /// `rect` : rectangle de l'espace des zones (page affichée) ; la page est rendue telle qu'on la voit.
     static func gray(page: PDFPage, rect: CGRect, scale: CGFloat) -> [UInt8]? {
-        let box = page.bounds(for: .cropBox)
+        let frame = PageGeometry(page: page)
+        let box = CGRect(origin: frame.origin, size: frame.displaySize)
         let r = rect.intersection(box)
         guard !r.isNull, r.width > 1, r.height > 1 else { return nil }
         let w = Int(ceil(r.width * scale)), h = Int(ceil(r.height * scale))

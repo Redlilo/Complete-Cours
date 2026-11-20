@@ -50,7 +50,7 @@ do {
     let footer = zone(1, before: "Document de travail — usage interne", width: 480)
     let label = zone(2, before: "Schéma de l'installation :", width: 150)
     let typed = zone(3, before: "Cite un appareil de protection", width: 230)
-    let added = zone(4, before: "Remarques", width: 300)
+    let added = zone(4, before: "Remarques et observations", width: 300)
     mem.recordIgnored(footer, documentName: "Fiche TP 04 - Onduleur")
     mem.recordKind(.definition, for: typed, documentName: "Fiche TP 04 - Onduleur")
     mem.recordConfirmed(added, documentName: "Fiche TP 04 - Onduleur")
@@ -63,7 +63,7 @@ do {
     var zones = [zone(10, before: "Document de travail — usage interne", width: 482),   // pied de page (à 2 pt près)
                  zone(11, before: "Schéma de l'installation :", width: 150),             // jamais corrigé
                  zone(12, before: "Cite un appareil de protection", width: 230),
-                 zone(13, before: "Remarques", width: 300)]
+                 zone(13, before: "Remarques et observations", width: 300)]
     zones[3].confidence = 0.4
     let applied = again.apply(to: &zones, documentName: "Fiche TP 07 - Onduleur (complétée)")
     check(zones[0].kind == .ignorer && !zones[0].enabled, "pied de page : ignoré comme d'habitude")
@@ -84,7 +84,7 @@ do {
     check(z2[0].kind == .mot && z2[0].enabled && again.count == 3, "dernière correction retenue, pas de doublon", "\(z2[0].kind) \(again.count)")
 
     // les zones dessinées à la main ne sont pas touchées
-    var manual = [zone(40, before: "Remarques", width: 300, source: .manuel)]
+    var manual = [zone(40, before: "Remarques et observations", width: 300, source: .manuel)]
     manual[0].confidence = 0.3
     check(again.apply(to: &manual, documentName: "Fiche TP 05 - Onduleur").isEmpty, "zone manuelle : laissée")
 

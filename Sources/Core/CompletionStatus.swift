@@ -101,13 +101,14 @@ enum CompletionStatus {
     /// Écarte ce que le détecteur prend pour un trou sans en être un : le trait de pied de page ou d'en-tête
     /// (une longue ligne dans les marges) et les « Libellé : » suivis d'un schéma plutôt que de pointillés.
     static func isMeaningful(_ z: Zone, page: PDFPage) -> Bool {
-        let b = page.bounds(for: .cropBox), r = z.rect
+        let geo = PageGeometry(page: page)
+        let b = CGRect(origin: geo.origin, size: geo.displaySize), r = z.rect     // espace de la page affichée
         if z.source == .ligne || z.source == .texte {
             let rel = (r.midY - b.minY) / max(b.height, 1)
             if (rel < 0.09 || rel > 0.94) && r.width > 0.5 * b.width { return false }
         }
         if z.source == .texte {
-            let under = page.selection(for: r.insetBy(dx: -4, dy: -4))?.string ?? ""
+            let under = page.selection(for: geo.pageRect(fromZone: r.insetBy(dx: -4, dy: -4)))?.string ?? ""
             let leader = under.range(of: "[._…·\\-–—]{4,}", options: .regularExpression) != nil
             let brackets = under.range(of: "[\\(\\[]\\s*[\\)\\]]", options: .regularExpression) != nil
             if !leader && !brackets { return false }
@@ -119,10 +120,11 @@ enum CompletionStatus {
 
     /// Zones de la page couvertes par une annotation de texte non vide (réponses écrites par l'app).
     static func textAnnotationRects(_ page: PDFPage) -> [CGRect] {
-        page.annotations.compactMap { ann -> CGRect? in
+        let geo = PageGeometry(page: page)
+        return page.annotations.compactMap { ann -> CGRect? in
             guard (ann.type ?? "") == "FreeText" else { return nil }
             let text = (ann.contents ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-            return text.isEmpty ? nil : ann.bounds
+            return text.isEmpty ? nil : geo.zoneRect(fromPage: ann.bounds)
         }
     }
 

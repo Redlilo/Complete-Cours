@@ -51,7 +51,7 @@ enum ZoneKindRules {
         let multi = lineCount >= 2 || bigBox
         let inline = afterSame.count >= 2 && !multi
 
-        let isDef = matches(definitionCue, scope) || matches(definitionCue, tail)
+        let isDef = matches(definitionCue, scope)
         let isOpen = matches(openCue, scope)
         let isCalc = matches(calcCue, scope)
         let endsWithQuestion = scope.hasSuffix("?") || scope.hasSuffix("? :") || scope.hasSuffix("?:")
@@ -69,6 +69,9 @@ enum ZoneKindRules {
             if isDef { return KindDecision(kind: .definition, certainty: 0.6, reason: "« définis » mais beaucoup de lignes") }
             if isCalc && !isOpen && lineCount <= 2 { return KindDecision(kind: .question, certainty: 0.6, reason: "calcul rédigé sur plusieurs lignes") }
             return KindDecision(kind: .question, certainty: 0.85, reason: "plusieurs lignes à rédiger")
+        }
+        if inline && width < 230 {
+            return KindDecision(kind: .mot, certainty: isOpen ? 0.75 : 0.95, reason: "trou isolé dans une phrase")
         }
         if isDef {
             if width >= 120 { return KindDecision(kind: .definition, certainty: 0.9, reason: "« définis » ou « qu'est-ce que » avant une ligne large") }

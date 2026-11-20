@@ -377,20 +377,20 @@ enum CoursPipeline {
                 guard let i = zones.firstIndex(where: { $0.id == zoneID }) else { return }
                 if isHole {
                     zones[i].confidence = max(zones[i].confidence, 0.9)
-                    zones[i].signals.append("contrôlée par l'IA : vrai trou")
+                    if !zones[i].signals.contains("contrôlée par l'IA : vrai trou") { zones[i].signals.append("contrôlée par l'IA : vrai trou") }
                 } else {
                     zones[i].kind = .ignorer
                     zones[i].enabled = false
                     zones[i].answer = ""
                     zones[i].rawAnswer = ""
-                    zones[i].signals.append("contrôlée par l'IA : pas un trou")
+                    if !zones[i].signals.contains("contrôlée par l'IA : pas un trou") { zones[i].signals.append("contrôlée par l'IA : pas un trou") }
                     notHoleIDs.insert(zoneID)
                 }
             }
             var pending: [Zone] = []
             for z in doubtful {
-                let sig = ZoneSignature(zone: z, documentName: documentName).key
-                if let known = settings.holeCache.verdict(for: sig) { verdict(known, zoneID: z.id) } else { pending.append(z) }
+                let signature = ZoneSignature(zone: z, documentName: documentName)
+                if signature.isLearnable, let known = settings.holeCache.verdict(for: signature.key) { verdict(known, zoneID: z.id) } else { pending.append(z) }
             }
             for a in analyses {
                 let pageZones = pending.filter { $0.page == a.pageIndex }
@@ -400,8 +400,10 @@ enum CoursPipeline {
                 do {
                     let answers = try await engine.checkHoles(req)
                     for z in pageZones {
-                        let isHole = answers[z.number] ?? true     // sans réponse : on garde le trou
-                        settings.holeCache.store(isHole, for: ZoneSignature(zone: z, documentName: documentName).key)
+                        let answered = answers[z.number]
+                        let isHole = answered ?? true     // sans réponse : on garde le trou (sans le mémoriser)
+                        let signature = ZoneSignature(zone: z, documentName: documentName)
+                        if answered != nil, signature.isLearnable { settings.holeCache.store(isHole, for: signature.key) }
                         verdict(isHole, zoneID: z.id)
                     }
                 } catch {

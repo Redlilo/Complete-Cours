@@ -18,7 +18,7 @@ struct ZoneSignature: Equatable, Codable {
     var key: String { "\(source)|\(widthBucket)|\(neighbor)|\(model)" }
 
     /// Il faut un texte voisin pour reconnaître une zone d'un document à l'autre.
-    var isLearnable: Bool { !neighbor.isEmpty }
+    var isLearnable: Bool { neighbor.replacingOccurrences(of: "→", with: "").count >= 10 }
 
     /// Même zone à une largeur près (le scan et la mise en page bougent un peu d'un fichier à l'autre).
     func matches(_ other: ZoneSignature) -> Bool {
@@ -116,6 +116,7 @@ final class ZoneLearning: @unchecked Sendable {
     private var entries: [Entry] = []
     /// Le fichier existant était illisible : il a été mis de côté (« ….corrompu ») et la mémoire repart de zéro.
     private(set) var recoveredFromCorruption = false
+    private var unreadable = false
 
     init(directory: URL) {
         fileURL = directory.appendingPathComponent(ZoneLearning.fileName)
@@ -224,7 +225,11 @@ final class ZoneLearning: @unchecked Sendable {
     }
 
     private func load() {
-        guard let data = try? Data(contentsOf: fileURL) else { return }
+        guard let data = try? Data(contentsOf: fileURL) else {
+            // fichier présent mais illisible : on ne l'écrase pas avec une mémoire vide
+            if FileManager.default.fileExists(atPath: fileURL.path) { unreadable = true }
+            return
+        }
         // lecture tolérante : une entrée abîmée est sautée, un fichier illisible est mis de côté
         guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let raw = root["entries"] as? [Any] else {
@@ -256,6 +261,7 @@ final class ZoneLearning: @unchecked Sendable {
     private func save() {
         // une écriture à la fois, et la photo de la mémoire est prise DANS le verrou : la dernière écriture est la plus récente
         saveLock.lock(); defer { saveLock.unlock() }
+        if unreadable { return }
         lock.lock()
         let snapshot = entries
         lock.unlock()

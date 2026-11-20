@@ -93,7 +93,7 @@ if args.count >= 3, args[0] == "zones" {
         nextID += a.zones.count
         let ms = Int(Date().timeIntervalSince(t0) * 1000)
         print("=== page \(p + 1) : \(a.zones.count) zone(s), texte=\(a.hasTextLayer), rotation=\(page.rotation) [\(ms) ms]")
-        if a.rotationUnsupported { print("   (page tournée : non gérée)") }
+        if a.rotationUnsupported { print("   (page tournée)") }
         for z in a.zones {
             let r = z.rect
             print(String(format: "  #%d %@ %@ x=%.0f y=%.0f w=%.0f h=%.0f lignes=%d  cap=%d  avant=«%@»  apres=«%@»",

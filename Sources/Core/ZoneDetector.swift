@@ -15,11 +15,8 @@ enum ZoneDetector {
     /// Analyse une page : trouve les trous à remplir et reconstruit le texte autour.
     /// - Parameter needText: lit aussi le texte des pages scannées (OCR) — utile pour les IA sans vision.
     static func analyze(page: PDFPage, index: Int, firstID: Int, needText: Bool) -> PageAnalysis {
-        let rot = ((page.rotation % 360) + 360) % 360
-        if rot != 0 {
-            return PageAnalysis(pageIndex: index, zones: [], transcript: "", hasTextLayer: false,
-                                rotationUnsupported: true, fontSize: 11)
-        }
+        // Les zones sont dans l'espace de la page AFFICHÉE (rotation appliquée) : voir PageGeometry.
+        let frame = PageGeometry(page: page)
 
         var layout = TextLayout.fromPDF(page)
         let hasText = layout.meaningfulCharCount >= 60
@@ -31,11 +28,13 @@ enum ZoneDetector {
             guard (ann.type ?? "") == "Widget", ann.widgetFieldType == .text else { continue }
             let value = ann.widgetStringValue ?? ""
             if !value.trimmingCharacters(in: .whitespaces).isEmpty { continue }
-            let b = ann.bounds
+            let b = frame.zoneRect(fromPage: ann.bounds)
             if b.width < 12 || b.height < 8 { continue }
             var z = Zone(id: 0, page: index, number: 0, source: .formulaire)
             z.box = b
             z.widget = ann
+            z.confidence = 0.98
+            z.signals = ["champ de formulaire vide"]
             drafts.append(z)
         }
 
@@ -60,6 +59,13 @@ enum ZoneDetector {
                     extra.append(nxt.line)
                     consumed.insert(nj)
                     cur = nxt
+                }
+                if r.isLeader {
+                    z.confidence = 0.92; z.signals = ["pointillés dans le texte"]
+                } else if r.endsLine {
+                    z.confidence = 0.7; z.signals = ["« libellé : » sans rien à droite"]
+                } else {
+                    z.confidence = 0.7; z.signals = ["parenthèses ou crochets vides"]
                 }
                 drafts.append(z)
                 leaderOf[drafts.count - 1] = (r, extra)
@@ -92,7 +98,18 @@ enum ZoneDetector {
         if let (img, geo) = rendered {
             let gray = PageImaging.gray(img)
             let dpi = geo.pixelSize.width / (geo.displaySize.width / 72)
-            let det = PixelDetector.detect(gray, dpi: dpi)
+            // détection de la page + formes des autres pages (décor répété : en-têtes, pieds de page, logos)
+            let decor = DecorIndex.shared
+            let det = decor.detection(page: page, index: index, own: (gray, geo, dpi))
+            let pageW = geo.displaySize.width, pageH = geo.displaySize.height
+            /// Position verticale depuis le haut de la page affichée (0 en haut, 1 en bas).
+            func fromTop(_ y: CGFloat) -> CGFloat { (geo.origin.y + pageH - y) / pageH }
+            func inMargin(_ y: CGFloat) -> String? {
+                let f = fromTop(y)
+                if f < 0.105 { return "dans la marge haute de la page" }
+                if f > 0.915 { return "dans la marge basse de la page" }
+                return nil
+            }
 
             // 3a. pointillés du texte : caler sur la vraie ligne dessinée, écarter ceux qui sont déjà remplis
             var drop = Set<Int>()
@@ -110,6 +127,15 @@ enum ZoneDetector {
                     for x in x0...x1 where gray.data[y * gray.width + x] < 110 { ink += 1 }
                 }
                 if Double(ink) > 0.02 * Double((x1 - x0 + 1) * (y1 - y0 + 1)) { drop.insert(di) }
+            }
+            // « Libellé : » dont la réponse n'est probablement pas à droite : texte courant ou figure juste en dessous
+            for di in drafts.indices where drafts[di].source == .texte && !drop.contains(di) {
+                guard let info = leaderOf[di], !info.run.isLeader, info.run.endsLine else { continue }
+                let label = layout.lines[info.run.line].bbox
+                if let why = colonDoubt(label: label, layout: layout, gray: gray, geo: geo) {
+                    drafts[di].confidence = min(drafts[di].confidence, 0.35)
+                    drafts[di].signals.append(why)
+                }
             }
             for di in drafts.indices where drafts[di].source == .texte {
                 for li in drafts[di].lines.indices {
@@ -166,15 +192,63 @@ enum ZoneDetector {
                 }
                 if let first = z.lines.first, isHeadingRule(first) { continue }
                 if layout.tocRects.contains(where: { $0.intersects(z.rect) }) { continue }
-                if !overlapsExisting(z.rect) { drafts.append(z) }
+                guard !overlapsExisting(z.rect), let first = z.lines.first else { continue }
+                let dotted = group.first?.dotted ?? false
+                z.confidence = dotted ? 0.85 : 0.8
+                z.signals = [dotted ? "pointillés dessinés" : "ligne dessinée"]
+                if z.lines.count >= 2 { z.confidence = 0.88; z.signals.append("\(z.lines.count) lignes alignées") }
+                else if !dotted && first.width < 60 { z.confidence = 0.55; z.signals.append("ligne très courte") }
+                let others = decor.repeats(of: PageShape(line: first), page: index, anyX: inMargin(first.y) != nil)
+                if let why = inMargin(first.y) {
+                    // en-tête, pied de page : une forme qui revient à la même hauteur sur d'autres pages n'est pas un trou
+                    z.confidence = min(z.confidence, 0.3); z.signals.append(why)
+                } else if others >= 2 && z.lines.count == 1 && first.width < 0.5 * pageW {
+                    z.confidence = min(z.confidence, 0.35)
+                    z.signals.append("même ligne sur \(others + 1) pages (décor probable)")
+                }
+                drafts.append(z)
             }
             // 3c. cadres et cases vides
+            var cadreDrafts: [Int] = []
             for b in det.boxes {
                 let r = geo.toPage(rect: b)
                 var z = Zone(id: 0, page: index, number: 0, source: .cadre)
                 z.box = r
-                if !overlapsExisting(r) { drafts.append(z) }
+                if overlapsExisting(r) { continue }
+                z.confidence = 0.55
+                z.signals = ["cadre vide dessiné (rien n'indique qu'il faut y écrire)"]
+                let others = decor.repeats(of: PageShape(box: r), page: index, anyX: false)
+                if others >= 2 {
+                    z.confidence = min(z.confidence, 0.3)
+                    z.signals.append("même cadre sur \(others + 1) pages (décor probable)")
+                } else if let why = inMargin(r.midY) {
+                    z.confidence = min(z.confidence, 0.35); z.signals.append(why)
+                }
+                cadreDrafts.append(drafts.count)
+                drafts.append(z)
             }
+            // cases d'un tableau vide, cadres posés sur une figure : plus douteux
+            var dropped = Set<Int>()
+            for di in cadreDrafts {
+                guard let r = drafts[di].box else { continue }
+                var aligned = 0
+                for oi in cadreDrafts where oi != di {
+                    guard let o = drafts[oi].box else { continue }
+                    if abs(o.height - r.height) <= 5 && (abs(o.minY - r.minY) <= 4 || abs(o.minX - r.minX) <= 4) { aligned += 1 }
+                }
+                if aligned >= 3 {
+                    drafts[di].confidence = min(drafts[di].confidence, 0.5)
+                    drafts[di].signals.append("case d'un tableau vide (\(aligned + 1) cases alignées)")
+                }
+                let busy = surroundingInk(r, gray: gray, geo: geo)
+                if busy > 0.25 { dropped.insert(di); continue }    // posé sur une photo ou un fond coloré : décor
+                if busy > 0.08 {
+                    drafts[di].confidence = min(drafts[di].confidence, 0.4)
+                    drafts[di].signals.append("posé sur un schéma ou une image")
+                }
+            }
+            // (les cadres sont les derniers brouillons : retirer des indices ne décale pas les pointillés du texte)
+            if !dropped.isEmpty { drafts = drafts.enumerated().filter { !dropped.contains($0.offset) }.map { $0.element } }
         }
 
         // 4. ordre de lecture et numérotation
@@ -206,6 +280,68 @@ enum ZoneDetector {
         }
         return PageAnalysis(pageIndex: index, zones: zones, transcript: transcript, hasTextLayer: hasText,
                             rotationUnsupported: false, fontSize: fontSize)
+    }
+
+    // MARK: - Doute sur un « Libellé : »
+
+    /// Part de pixels foncés dans un rectangle de l'espace des zones (hors texte de la couche texte si `skipping`).
+    private static func darkShare(_ r: CGRect, gray: GrayBitmap, geo: PageGeometry, skipping: [CGRect] = [], threshold: UInt8 = 150) -> Double {
+        let ir = geo.toImage(rect: r)
+        let x0 = max(0, Int(ir.minX)), x1 = min(gray.width - 1, Int(ir.maxX))
+        let y0 = max(0, Int(ir.minY)), y1 = min(gray.height - 1, Int(ir.maxY))
+        guard x1 > x0, y1 > y0 else { return 0 }
+        let skip = skipping.map { geo.toImage(rect: $0.insetBy(dx: -1.5, dy: -1.5)) }.filter { $0.intersects(ir) }
+        var dark = 0, total = 0
+        for y in y0...y1 {
+            for x in x0...x1 {
+                if !skip.isEmpty, skip.contains(where: { $0.contains(CGPoint(x: x, y: y)) }) { continue }
+                total += 1
+                if gray.data[y * gray.width + x] < threshold { dark += 1 }
+            }
+        }
+        return total > 0 ? Double(dark) / Double(total) : 0
+    }
+
+    /// Part de pixels non blancs dans un anneau autour d'un cadre (fond coloré, photo, schéma voisin).
+    private static func surroundingInk(_ r: CGRect, gray: GrayBitmap, geo: PageGeometry) -> Double {
+        let ir = geo.toImage(rect: r)
+        let inner = 5, outer = 16
+        let x0 = max(0, Int(ir.minX) - outer), x1 = min(gray.width - 1, Int(ir.maxX) + outer)
+        let y0 = max(0, Int(ir.minY) - outer), y1 = min(gray.height - 1, Int(ir.maxY) + outer)
+        guard x1 > x0, y1 > y0 else { return 0 }
+        var busy = 0, total = 0
+        for y in y0...y1 {
+            for x in x0...x1 {
+                let dx = max(Int(ir.minX) - x, x - Int(ir.maxX), 0), dy = max(Int(ir.minY) - y, y - Int(ir.maxY), 0)
+                let d = max(dx, dy)
+                guard d >= inner && d <= outer else { continue }
+                total += 1
+                if gray.data[y * gray.width + x] < 225 { busy += 1 }
+            }
+        }
+        return total > 0 ? Double(busy) / Double(total) : 0
+    }
+
+    /// Raison pour laquelle la place à droite d'un « Libellé : » n'est probablement pas le trou : le texte continue
+    /// juste en dessous (paragraphe), ou une figure / un tableau se trouve juste en dessous. nil si rien à signaler.
+    private static func colonDoubt(label: CGRect, layout: TextLayout, gray: GrayBitmap, geo: PageGeometry) -> String? {
+        let lh = max(label.height, 8)
+        var below: TextLine?
+        var bestGap = CGFloat.greatestFiniteMagnitude
+        for t in layout.lines {
+            let gap = label.minY - t.bbox.maxY
+            guard gap > -2, gap < bestGap, t.bbox.minX < label.maxX, t.bbox.maxX > label.minX else { continue }
+            below = t; bestGap = gap
+        }
+        if let t = below, bestGap < 0.9 * lh, t.text.count >= 20, !t.text.hasSuffix(":"), t.bbox.minX < label.minX + 40 {
+            return "texte courant juste en dessous du libellé"
+        }
+        let band = CGRect(x: label.minX, y: label.minY - 62, width: 280, height: 58)
+        let textBoxes = layout.lines.map { $0.bbox }
+        if darkShare(band, gray: gray, geo: geo, skipping: textBoxes) > 0.05 {
+            return "schéma ou tableau juste en dessous du libellé"
+        }
+        return nil
     }
 
     // MARK: - Zone dessinée à la main
@@ -358,5 +494,92 @@ enum KindGuesser {
         if afterSame.count >= 2 && width < 230 { return .mot }
         if width < 150 { return .mot }
         return .question
+    }
+}
+
+// MARK: - Décor répété d'une page à l'autre
+
+/// Forme repérée dans l'image d'une page (espace des zones), pour retrouver le décor qui revient sur plusieurs pages.
+struct PageShape {
+    var rect: CGRect
+    var isBox: Bool
+    init(line: WritingLine) { rect = CGRect(x: line.x0, y: line.y, width: line.width, height: 0); isBox = false }
+    init(box: CGRect) { rect = box; isBox = true }
+
+    /// Même forme à la même place (quelques points près) ; `anyX` : seule la hauteur compte (traits d'en-tête et de pied de page).
+    func matches(_ o: PageShape, anyX: Bool) -> Bool {
+        guard isBox == o.isBox else { return false }
+        if isBox {
+            return abs(rect.minX - o.rect.minX) <= 4 && abs(rect.maxX - o.rect.maxX) <= 4
+                && abs(rect.minY - o.rect.minY) <= 4 && abs(rect.maxY - o.rect.maxY) <= 4
+        }
+        guard abs(rect.minY - o.rect.minY) <= 3 else { return false }
+        if anyX { return true }
+        return abs(rect.minX - o.rect.minX) <= 5 && abs(rect.maxX - o.rect.maxX) <= 5
+    }
+}
+
+/// Mémoire (par document) de ce que la détection visuelle a trouvé sur chaque page : la première page analysée
+/// examine toutes les pages une seule fois, les suivantes réutilisent le résultat.
+final class DecorIndex: @unchecked Sendable {
+    static let shared = DecorIndex()
+    /// Au-delà, on ne cherche plus le décor (coût d'examen de toutes les pages au premier appel).
+    static let maxPages = 80
+
+    private struct Entry { var det: PixelDetection; var shapes: [PageShape]; var annotations: Int }
+    private let lock = NSLock()
+    private weak var document: PDFDocument?
+    private var entries: [Int: Entry] = [:]
+
+    /// Détection de la page `index` (calculée avec `own` si elle n'est pas en mémoire) ; examine aussi les autres pages.
+    func detection(page: PDFPage, index: Int, own: (GrayBitmap, PageGeometry, CGFloat)) -> PixelDetection {
+        guard let doc = page.document, doc.pageCount >= 3, doc.pageCount <= Self.maxPages else {
+            return PixelDetector.detect(own.0, dpi: own.2)
+        }
+        lock.lock()
+        if document !== doc { document = doc; entries = [:] }
+        let known = entries[index]
+        lock.unlock()
+        let det: PixelDetection
+        if let known, known.annotations == page.annotations.count { det = known.det } else {
+            det = PixelDetector.detect(own.0, dpi: own.2)
+            store(det, geometry: own.1, page: page, index: index)
+        }
+        // les autres pages : une seule fois
+        for j in 0..<doc.pageCount where j != index {
+            lock.lock(); let have = entries[j] != nil; lock.unlock()
+            if have { continue }
+            guard let p = doc.page(at: j) else { continue }
+            autoreleasepool {
+                guard let (img, geo) = PageImaging.render(page: p, longEdge: 2000) else { return }
+                let g = PageImaging.gray(img)
+                let d = PixelDetector.detect(g, dpi: geo.pixelSize.width / (geo.displaySize.width / 72))
+                store(d, geometry: geo, page: p, index: j)
+            }
+        }
+        return det
+    }
+
+    private func store(_ det: PixelDetection, geometry geo: PageGeometry, page: PDFPage, index: Int) {
+        var shapes: [PageShape] = []
+        for l in det.allLines {
+            let a = geo.toPage(CGPoint(x: CGFloat(l.x0), y: CGFloat(l.y)))
+            let b = geo.toPage(CGPoint(x: CGFloat(l.x1), y: CGFloat(l.yEnd)))
+            shapes.append(PageShape(line: WritingLine(x0: a.x, x1: b.x, y: a.y, yEnd: b.y)))
+        }
+        for b in det.boxes { shapes.append(PageShape(box: geo.toPage(rect: b))) }
+        lock.lock()
+        entries[index] = Entry(det: det, shapes: shapes, annotations: page.annotations.count)
+        lock.unlock()
+    }
+
+    /// Nombre d'AUTRES pages où la même forme se trouve au même endroit (0 si le document a moins de 3 pages).
+    func repeats(of shape: PageShape, page index: Int, anyX: Bool) -> Int {
+        lock.lock(); defer { lock.unlock() }
+        var n = 0
+        for (j, e) in entries where j != index {
+            if e.shapes.contains(where: { shape.matches($0, anyX: anyX) }) { n += 1 }
+        }
+        return n
     }
 }

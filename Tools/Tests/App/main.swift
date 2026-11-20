@@ -233,10 +233,8 @@ func testOpening(_ files: TestPDFs.Files, dir: URL) async {
 
     // page tournée
     await checkA(await openAndWait(model, files.tourne), "tourne.pdf s'ouvre")
-    check(model.skippedPages == [0], "page tournée repérée")
-    check((model.skippedPagesMessage ?? "").contains("tournées"), "message pour PDF entièrement tourné : \(model.skippedPagesMessage ?? "")")
-    check(model.zones.isEmpty && !model.canComplete && !model.canDrawZone, "rien à faire sur un PDF tourné")
-    check(model.analysisSummary == "Aucune zone à remplir n'a été trouvée", "résumé sans zone")
+    check(model.skippedPages.isEmpty && model.skippedPagesMessage == nil, "page tournée : analysée, plus ignorée")
+    check(model.canDrawZone, "PDF tourné : on peut ajouter une zone")
 
     // PDF verrouillé
     await checkA(!(await openAndWait(model, files.verrouille)), "verrouille.pdf ne s'ouvre pas")
@@ -498,7 +496,7 @@ func testManualZones(_ files: TestPDFs.Files) async {
     // page tournée
     _ = await openAndWait(model, files.tourne)
     await model.addManualZone(pageIndex: 0, rect: CGRect(x: 60, y: 200, width: 220, height: 40))
-    check(model.zones.isEmpty && (model.notice?.text ?? "").contains("tournée"), "page tournée : refus clair : \(model.notice?.text ?? "")")
+    check(model.zones.contains { $0.source == .manuel }, "page tournée : zone manuelle acceptée")
 }
 
 @MainActor
@@ -685,7 +683,8 @@ func testLearning(_ files: TestPDFs.Files, dir: URL) async {
     check(manual != nil, "zone manuelle ajoutée")
     if let manual {
         let learnableManual = ZoneSignature(zone: manual, documentName: modelG.documentName).isLearnable
-        check(modelG.learnedCount == n0 + (learnableManual ? 1 : 0), "zone ajoutée à la main : retenue (si elle a un texte voisin)", "\(n0) -> \(modelG.learnedCount)")
+        _ = learnableManual
+        check(modelG.learnedCount == n0, "zone ajoutée à la main : pas mémorisée (signature non réutilisable)", "\(n0) -> \(modelG.learnedCount)")
         check(manual.kind == ZoneKindRules.propose(manual).kind, "zone manuelle : type proposé par les règles")
     }
 
