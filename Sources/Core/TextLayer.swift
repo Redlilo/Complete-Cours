@@ -128,6 +128,26 @@ final class TextLayout {
         return runs
     }
 
+    /// Texte déjà tapé SUR un pointillé (ou juste au-dessus) : la réponse est déjà écrite, le trou n'est plus à remplir.
+    /// Le texte tapé est en corps plus petit que la ligne de pointillés (réponse d'élève, réponse de l'app) ; une question
+    /// ou une consigne au-dessus du pointillé a le même corps que lui et n'est donc pas prise pour une réponse.
+    func hasTypedAnswer(on run: LeaderRun) -> Bool {
+        guard run.line < lines.count else { return false }
+        let dh = max(lines[run.line].bbox.height, 6)
+        for (i, o) in lines.enumerated() where i != run.line {
+            let ob = o.bbox
+            guard ob.height >= 5, ob.height <= 0.9 * dh else { continue }
+            guard o.text.reduce(0, { $0 + ($1.isLetter || $1.isNumber ? 1 : 0) }) >= 3 else { continue }
+            let ox = min(ob.maxX, run.rect.maxX) - max(ob.minX, run.rect.minX)
+            guard ox >= 20, ox >= 0.35 * min(ob.width, run.rect.width) else { continue }
+            // sur le pointillé ou juste au-dessus (jamais en dessous : c'est la ligne suivante, une autre question)
+            guard ob.midY >= run.rect.midY - 0.3 * dh else { continue }
+            guard ob.minY - run.rect.maxY <= 0.8 * dh else { continue }
+            return true
+        }
+        return false
+    }
+
     /// Parenthèses ou crochets vides « ( ) », « [   ] » : le trou est entre les deux signes.
     /// Le texte écrit remplace seulement l'intérieur, les signes restent.
     func bracketRuns() -> [LeaderRun] {

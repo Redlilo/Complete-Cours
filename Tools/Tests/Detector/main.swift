@@ -435,6 +435,82 @@ func scenarioFiguresAndShortLines() {
     check(!g.isEmpty && g.allSatisfy { $0.confidence <= 0.5 && $0.signals.contains { $0.contains("tableau") } }, "cases d'un tableau vide : douteuses, signal « tableau » (\(g.count) cases)")
 }
 
+// MARK: - Réponses déjà écrites : pointillés couverts, cases laissées vides exprès
+
+func scenarioAlreadyAnswered() {
+    section("Pointillés déjà couverts par une réponse tapée")
+    func dottedDoc(_ rotation: Int) -> PDFDocument { makeDoc(rotation: rotation, pages: [{ ctx in
+        text(ctx, "Séance 3 : le réseau local", x: 72, y: 800, size: 16, bold: true)
+        // 1. pointillés vierges
+        text(ctx, "1. Un switch relie les postes entre eux : .............................................", x: 72, y: 700)
+        // 2. même pointillé, réponse tapée en petit sur la ligne
+        text(ctx, "2. Un routeur relie les réseaux entre eux :", x: 72, y: 650)
+        text(ctx, "............................................................................................................", x: 72, y: 636)
+        text(ctx, "il choisit le chemin des paquets entre les réseaux", x: 100, y: 639, size: 8.5)
+        // 3. question au même corps juste au-dessus du pointillé : pas une réponse
+        text(ctx, "3. Que fait la commande ping ?", x: 72, y: 580)
+        text(ctx, "............................................................................................................", x: 72, y: 565)
+        // 4. réponse en petit juste au-dessus d'une ligne de pointillés seule
+        text(ctx, "4. Que fait une adresse IP ?", x: 72, y: 500)
+        text(ctx, "elle identifie un poste sur le réseau local", x: 72, y: 484, size: 8.5)
+        text(ctx, "............................................................................................................", x: 72, y: 470)
+        // 5. pointillé vierge suivi, en dessous, d'une consigne en petit : ce n'est pas une réponse
+        text(ctx, "5. Quel est le rôle d'un pare-feu ?", x: 72, y: 410)
+        text(ctx, "............................................................................................................", x: 72, y: 395)
+        text(ctx, "6. consigne suivante en petit corps, sur la ligne d'après", x: 72, y: 381, size: 8.5)
+    }]) }
+    let zs = analyze(dottedDoc(0)).zones.filter { $0.source == .texte }
+    func zone(near y: CGFloat) -> Zone? { zs.first { abs($0.rect.midY - y) < 14 } }
+    if let z = zone(near: 703) { check(z.confidence >= 0.9, "pointillés vierges : sûrs (\(String(format: "%.2f", z.confidence)))") } else { check(false, "pointillés vierges : zone trouvée") }
+    // (le détecteur d'image peut déjà écarter ce pointillé ; sinon il doit au moins être douteux)
+    if let z = zone(near: 643) {
+        check(z.confidence < 0.7 && z.signals.contains { $0.contains("déjà écrit") }, "texte tapé sur le pointillé : douteux, signal lisible (\(String(format: "%.2f", z.confidence)) · \(z.signals.joined(separator: " ; ")))")
+    } else { check(true, "texte tapé sur le pointillé : déjà écarté par la détection d'image") }
+    if let z = zone(near: 568) { check(z.confidence >= 0.9, "question de même corps au-dessus du pointillé : sûr (\(String(format: "%.2f", z.confidence)))") } else { check(false, "pointillés sous la question : zone trouvée") }
+    if let z = zone(near: 473) {
+        check(z.confidence < 0.7 && z.signals.contains { $0.contains("déjà écrit") }, "réponse en petit juste au-dessus du pointillé : douteux (\(String(format: "%.2f", z.confidence)))")
+    } else { check(false, "pointillé sous une réponse : zone conservée") }
+    if let z = zone(near: 398) { check(z.confidence >= 0.9, "petit texte en dessous du pointillé : pas une réponse, sûr (\(String(format: "%.2f", z.confidence)))") } else { check(true, "pointillé 5 déjà écarté par la détection d'image") }
+    for rot in [90, 180, 270] {
+        let zr = analyze(dottedDoc(rot)).zones.filter { $0.source == .texte }
+        func zoneR(near y: CGFloat) -> Zone? { zr.first { abs($0.rect.midY - y) < 14 } }
+        if let z = zoneR(near: 473) { check(z.confidence < 0.7 && z.signals.contains { $0.contains("déjà écrit") }, "rotation \(rot) : réponse en petit au-dessus du pointillé toujours douteuse") } else { check(false, "rotation \(rot) : pointillé 4 conservé") }
+        if let z = zoneR(near: 568) { check(z.confidence >= 0.9, "rotation \(rot) : question de même corps toujours sûre") } else { check(false, "rotation \(rot) : pointillé 3 conservé") }
+    }
+
+    section("Tableau à marquer : case vide dans une ligne déjà cochée")
+    func table(ticked: Bool, cols: Int = 4, rotation: Int = 0) -> PDFDocument {
+        makeDoc(rotation: rotation, pages: [{ ctx in
+            text(ctx, "Cochez la bonne réponse pour chaque ligne du tableau suivant.", x: 72, y: 800)
+            for c in 0..<cols { strokeRect(ctx, CGRect(x: 72 + CGFloat(c) * 100, y: 500, width: 100, height: 120)) }
+            if ticked {
+                // croix dans les cases 2 et 3
+                for c in (cols == 4 ? [1, 2] : [0]) {
+                    let x = 72 + CGFloat(c) * 100 + 35
+                    ctx.setStrokeColor(gray: 0, alpha: 1); ctx.setLineWidth(2.5)
+                    ctx.move(to: CGPoint(x: x, y: 545)); ctx.addLine(to: CGPoint(x: x + 30, y: 575)); ctx.strokePath()
+                    ctx.move(to: CGPoint(x: x, y: 575)); ctx.addLine(to: CGPoint(x: x + 30, y: 545)); ctx.strokePath()
+                }
+            }
+        }])
+    }
+    let t1 = analyze(table(ticked: true)).zones.filter { $0.source == .cadre }
+    check(t1.count >= 2, "cases vides conservées, jamais supprimées (\(t1.count))")
+    check(t1.allSatisfy { $0.confidence <= 0.4 && $0.signals.contains { $0.contains("déjà marquées") } }, "cases laissées vides à côté de cases cochées : confiance ≤ 0.4, signal lisible")
+    let t0 = analyze(table(ticked: false)).zones.filter { $0.source == .cadre }
+    check(!t0.isEmpty && t0.allSatisfy { $0.confidence >= 0.5 && !$0.signals.contains { $0.contains("déjà marquées") } }, "tableau entièrement vide : cases inchangées (\(t0.map { String(format: "%.2f", $0.confidence) }.joined(separator: " ")))")
+    // deux cases seulement (terme | à remplir) : ce n'est pas un tableau à cocher, la case vide reste à remplir
+    let t2 = analyze(table(ticked: true, cols: 2)).zones.filter { $0.source == .cadre }
+    check(!t2.isEmpty && t2.allSatisfy { !$0.signals.contains { $0.contains("déjà marquées") } }, "tableau à deux cases dont une marquée : case vide inchangée")
+    // pages tournées : même verdict que la page droite
+    for rot in [90, 180, 270] {
+        let tr = analyze(table(ticked: true, rotation: rot)).zones.filter { $0.source == .cadre }
+        check(tr.count == t1.count && tr.allSatisfy { $0.confidence <= 0.4 && $0.signals.contains { $0.contains("déjà marquées") } }, "rotation \(rot) : cases vides à côté de cases cochées toujours douteuses (\(tr.count))")
+        let t0r = analyze(table(ticked: false, rotation: rot)).zones.filter { $0.source == .cadre }
+        check(!t0r.isEmpty && t0r.allSatisfy { !$0.signals.contains { $0.contains("déjà marquées") } }, "rotation \(rot) : tableau vide inchangé")
+    }
+}
+
 scenarioFiguresAndShortLines()
 scenarioRotation()
 scenarioRotatedFields()
@@ -442,6 +518,7 @@ scenarioDecor()
 scenarioLabels()
 scenarioHeadings()
 scenarioConfidenceBasics()
+scenarioAlreadyAnswered()
 
 print("\nBilan : \(checks - failures)/\(checks) contrôles réussis")
 exit(failures == 0 ? 0 : 1)

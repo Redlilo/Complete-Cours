@@ -48,6 +48,7 @@ enum ZoneDetector {
                 var z = Zone(id: 0, page: index, number: 0, source: .texte)
                 z.lines = [WritingLine(x0: r.rect.minX, x1: r.rect.maxX, y: r.ruleY)]
                 var extra: [Int] = []
+                var covered = r.isLeader && layout.hasTypedAnswer(on: r)   // réponse déjà tapée sur le pointillé
                 // lignes de pointillés qui suivent directement
                 var cur = r
                 while cur.endsLine, cur.isLeader,
@@ -57,11 +58,16 @@ enum ZoneDetector {
                     guard cur.ruleY - nxt.ruleY <= 2.6 * lh, cur.ruleY - nxt.ruleY > 0.5 * lh else { break }
                     z.lines.append(WritingLine(x0: nxt.rect.minX, x1: nxt.rect.maxX, y: nxt.ruleY))
                     extra.append(nxt.line)
+                    if layout.hasTypedAnswer(on: nxt) { covered = true }
                     consumed.insert(nj)
                     cur = nxt
                 }
                 if r.isLeader {
                     z.confidence = 0.92; z.signals = ["pointillés dans le texte"]
+                    if covered {
+                        z.confidence = 0.4
+                        z.signals.append("texte déjà écrit sur le pointillé (réponse probablement déjà donnée)")
+                    }
                 } else if r.endsLine {
                     z.confidence = 0.7; z.signals = ["« libellé : » sans rien à droite"]
                 } else {
@@ -240,6 +246,10 @@ enum ZoneDetector {
                     drafts[di].confidence = min(drafts[di].confidence, 0.5)
                     drafts[di].signals.append("case d'un tableau vide (\(aligned + 1) cases alignées)")
                 }
+                if tickedNeighbour(r, gray: gray, geo: geo) {
+                    drafts[di].confidence = min(drafts[di].confidence, 0.4)
+                    drafts[di].signals.append("case laissée vide dans une ligne dont les autres cases sont déjà marquées")
+                }
                 let busy = surroundingInk(r, gray: gray, geo: geo)
                 if busy > 0.25 { dropped.insert(di); continue }    // posé sur une photo ou un fond coloré : décor
                 if busy > 0.08 {
@@ -320,6 +330,41 @@ enum ZoneDetector {
             }
         }
         return total > 0 ? Double(busy) / Double(total) : 0
+    }
+
+    /// Tableau à cocher / à marquer : la ligne compte au moins trois cases de même largeur (bordées par des traits verticaux)
+    /// et l'une des autres contient déjà une croix ou du texte. La case vide est alors laissée vide exprès (faux, non, aucune).
+    /// Deux cases seulement (« terme | définition ») ne suffisent pas : la case vide est alors précisément à remplir.
+    private static func tickedNeighbour(_ r: CGRect, gray: GrayBitmap, geo: PageGeometry) -> Bool {
+        let ir = geo.toImage(rect: r)
+        let w = Int(ir.width), top = Int(ir.minY) + 4, bottom = Int(ir.maxY) - 4
+        guard w >= 20, bottom - top >= 12 else { return false }
+        func dark(_ x: Int, _ y: Int) -> Bool {
+            x >= 0 && x < gray.width && y >= 0 && y < gray.height && gray.data[y * gray.width + x] < 140
+        }
+        var cells = 0, marked = false
+        for dir in [1, -1] {
+            var near = dir > 0 ? Int(ir.maxX) : Int(ir.minX)
+            for _ in 0..<8 {
+                // trait vertical qui ferme la case voisine, à une largeur de case (à 8 % près) de la précédente
+                var farEdge: Int?
+                for d in -(w * 8 / 100)...(w * 8 / 100) {
+                    let x = near + dir * w + d
+                    var hits = 0
+                    for y in top...bottom where dark(x - 1, y) || dark(x, y) || dark(x + 1, y) { hits += 1 }
+                    if Double(hits) >= 0.8 * Double(bottom - top + 1) { farEdge = x; break }
+                }
+                guard let far = farEdge else { break }
+                let x0 = min(near, far) + 5, x1 = max(near, far) - 5
+                guard x1 - x0 > 10 else { break }
+                cells += 1
+                var ink = 0
+                for y in top...bottom { for x in x0...x1 where dark(x, y) { ink += 1 } }
+                if ink >= 40 && Double(ink) >= 0.002 * Double((x1 - x0 + 1) * (bottom - top + 1)) { marked = true }
+                near = far
+            }
+        }
+        return marked && cells >= 2
     }
 
     /// Raison pour laquelle la place à droite d'un « Libellé : » n'est probablement pas le trou : le texte continue
