@@ -190,6 +190,7 @@ struct ThumbnailView: View {
         .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(.separator))
         .shadow(color: .black.opacity(0.12), radius: 2, y: 1)
         .task(id: url) { image = await Thumbnails.shared.image(for: url) }
+        .accessibilityHidden(true)      // décoratif : le nom du fichier est déjà lu
     }
 }
 
@@ -217,12 +218,20 @@ struct PDFKitView: NSViewRepresentable {
         return v
     }
     func updateNSView(_ v: PDFView, context: Context) {
-        if v.document?.documentURL != url { v.document = PDFDocument(url: url); context.coordinator.applied = nil }
+        if v.document?.documentURL != url { v.document = PDFDocument(url: url); v.highlightedSelections = nil; context.coordinator.applied = nil }
         apply(to: v, context: context)
     }
 
     private func apply(to v: PDFView, context: Context) {
-        guard let focus, focus.url == url, context.coordinator.applied != focus, let doc = v.document else { return }
+        guard let focus, focus.url == url else {
+            // plus de recherche en cours, ou un autre document : le surlignage jaune disparaît
+            if context.coordinator.applied != nil || v.highlightedSelections != nil {
+                v.highlightedSelections = nil
+                context.coordinator.applied = nil
+            }
+            return
+        }
+        guard context.coordinator.applied != focus, let doc = v.document else { return }
         context.coordinator.applied = focus
         var marks: [PDFSelection] = []
         for t in focus.terms {
@@ -528,6 +537,11 @@ private struct FileRowView: View {
         .onHover { hover = $0 }
         .onTapGesture(count: 2) { openByDefault() }
         .onTapGesture { library.select(file) }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(file.name)
+        .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
+        .accessibilityAction(named: "Ouvrir") { openByDefault() }
+        .accessibilityAction(named: "Sélectionner") { library.select(file) }
         .contextMenu {
             if !file.isEvaluation { Button("Compléter le cours") { Recents.shared.touch(file.url); navigator.complete(file.url) } }
             if !file.isEvaluation { Button("Fiche de révision") { Recents.shared.touch(file.url); navigator.makeSheet(file.url) } }

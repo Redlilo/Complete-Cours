@@ -149,7 +149,7 @@ final class AutoIntake: NSObject, ObservableObject, UNUserNotificationCenterDele
     private func registerNotificationCategory() {
         guard let c = center() else { return }
         c.delegate = self
-        let undo = UNNotificationAction(identifier: Self.undoActionID, title: "Annuler", options: [])
+        let undo = UNNotificationAction(identifier: Self.undoActionID, title: "Annuler le rangement", options: [])
         c.setNotificationCategories([UNNotificationCategory(identifier: Self.categoryID, actions: [undo], intentIdentifiers: [])])
     }
 
@@ -286,7 +286,7 @@ struct AutoIntakeSheet: View {
                                 Text(Self.formatter.string(from: m.date)).font(.caption2).foregroundStyle(.tertiary)
                             }
                             Spacer(minLength: 8)
-                            Button("Annuler") { intake.undo(m.id) }.controlSize(.small)
+                            Button("Annuler ce rangement") { intake.undo(m.id) }.controlSize(.small)
                         }
                     }
                     if let msg = history.message { Text(msg).font(.callout) }
@@ -314,7 +314,7 @@ struct AutoIntakeBanner: View {
                 Text(b.text).font(.callout.weight(.medium)).foregroundStyle(.white).lineLimit(2)
                 Spacer()
                 if b.moveID != nil {
-                    Button("Annuler") { intake.undoBanner() }.buttonStyle(.borderedProminent).tint(.white).foregroundStyle(.blue)
+                    Button("Annuler le rangement") { intake.undoBanner() }.buttonStyle(.borderedProminent).tint(.white).foregroundStyle(.blue)
                 }
                 Button { intake.dismissBanner() } label: { Image(systemName: "xmark") }.buttonStyle(.plain).foregroundStyle(.white)
                     .help("Masquer")

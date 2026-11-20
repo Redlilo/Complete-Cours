@@ -10,7 +10,7 @@ struct ZonePanel: View {
     @AppStorage(Pref.humanize) private var humanize = Pref.defaultHumanize
     @AppStorage(Pref.humanizeTone) private var toneRaw = HumanizeTone.eleve.rawValue
     @AppStorage(Pref.verifyDoubtfulHoles) private var verifyDoubtful = false
-    @State private var doubtfulFirst = false
+    @AppStorage("zones.doubtfulFirst") private var doubtfulFirst = true
 
     private var engineKind: EngineKind { EngineKind(rawValue: engineRaw) ?? Pref.defaultEngine }
 

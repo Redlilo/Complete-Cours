@@ -546,7 +546,7 @@ struct MoveBanner: View {
             Image(systemName: "arrow.uturn.backward.circle.fill").foregroundStyle(.white)
             Text("\(count) \(Fr.plural(count, "fichier rangé", "fichiers rangés"))").font(.headline).foregroundStyle(.white)
             Text("—").foregroundStyle(.white.opacity(0.8))
-            Button("Annuler") { history.undoBanner() }
+            Button("Annuler le rangement") { history.undoBanner() }
                 .buttonStyle(.borderedProminent).tint(.white).foregroundStyle(.blue).controlSize(.regular)
             Spacer()
             Button { history.dismissBanner() } label: { Image(systemName: "xmark") }.buttonStyle(.plain).foregroundStyle(.white)
@@ -578,7 +578,7 @@ struct MoveHistoryRows: View {
                             .font(.caption2).foregroundStyle(.tertiary)
                     }
                     Spacer(minLength: 8)
-                    Button("Annuler") { history.undo(m.id) }.controlSize(.small)
+                    Button("Annuler ce rangement") { history.undo(m.id) }.controlSize(.small)
                     Button { history.forget(m.id) } label: { Image(systemName: "xmark.circle") }
                         .buttonStyle(.plain).foregroundStyle(.secondary).help("Retirer de l'historique sans déplacer le fichier")
                 }
