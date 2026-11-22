@@ -24,7 +24,7 @@ struct ContentView: View {
                 }
             }
         }
-        .navigationTitle(model.documentName.isEmpty ? "Complète-Cours" : model.documentName)
+        .navigationTitle(model.documentName.isEmpty ? AppIdentity.nom : model.documentName)
         .navigationSubtitle(subtitle)
         .toolbar { toolbarContent }
         .overlay { if dropTargeted && model.document != nil { DropHighlight() } }

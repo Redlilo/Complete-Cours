@@ -93,7 +93,7 @@ Anthropic, pour s'identifier.
 **Apple Intelligence.** Il faut un Mac compatible, avec Apple Intelligence activée (voir Dépannage). Si elle est
 prête, c'est le moteur proposé au départ. Rien ne sort de ton Mac.
 
-## Les quatre parties de l'app (⌘1 à ⌘4)
+## Les parties de l'app (⌘1 à ⌘5)
 
 - **Mes cours** : tous tes PDF rangés comme dans ton dossier `Cours`, avec vignettes, aperçu, « Reprendre où tu étais »,
   recherche par nom **et dans le contenu** (index local), **Ajouter** un cours (lu puis rangé tout seul, annulable),
@@ -107,7 +107,12 @@ prête, c'est le moteur proposé au départ. Rien ne sort de ton Mac.
 - **Fiches de révision** : fiche de synthèse (consigne libre possible), cartes mémoire (retournables, export PDF
   imprimable) et questions d'entraînement corrigées.
 - **Évaluations** : corrigé d'une évaluation **déjà rendue et notée**, pour comprendre tes erreurs. L'app ne complète
-  jamais une évaluation.
+  jamais une évaluation. Le bilan montre les questions fausses en premier, et « Cartes à partir de mes erreurs » en fait des
+  cartes mémoire sans appel à l'IA.
+- **Écouter un cours** (⌘5) : enregistre le cours, retire les remarques aux élèves, fait la fiche (copiable ou en PDF).
+
+La fiche, les cartes, les questions et le corrigé d'un PDF sont gardés : en le rouvrant, tu les retrouves sans
+nouvel appel à l'IA (tant que le PDF n'a pas changé).
 
 Rien n'est supprimé définitivement : les doublons vont à la Corbeille, les rangements se défont depuis l'historique.
 

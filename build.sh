@@ -8,8 +8,9 @@
 #                            à un camarade, et vérifie le contenu du zip extrait (structure, plist, arm64, signature,
 #                            absence du moteur « mon compte »). Le zip ne contient JAMAIS le moteur « mon compte ».
 #   ./build.sh --personnel   variante PERSONNELLE, pour toi seul : compile avec le moteur « Claude (mon compte) »
-#                            (-D COMPTE_PERSO). Elle s'appelle « Complète-Cours (perso) » (build/Complete-Cours-perso.app,
-#                            identifiant fr.complete-cours.app.perso) pour ne pas mélanger avec la version distribuable.
+#                            (-D COMPTE_PERSO) et l'écran « Suivi MacBook IA ». Elle s'appelle « App Perso »
+#                            (build/App Perso.app, identifiant fr.complete-cours.app.perso, inchangé : tes réglages, ton
+#                            trousseau et ton historique sont conservés) pour ne pas mélanger avec la version distribuable.
 #                            Combinable avec --install et --run ; incompatible avec --zip.
 #   ./build.sh --run         ... puis lance l'app
 #   ./build.sh --clean       supprime l'app et les fichiers intermédiaires de build/ (puis s'arrête ;
@@ -90,8 +91,8 @@ fi
 DRAPEAUX=()
 ID_BUNDLE_PERSO="fr.complete-cours.app.perso"
 if [ "$PERSO" = 1 ]; then
-    NOM_APP="Complete-Cours-perso"
-    NOM_AFFICHE="Complète-Cours (perso)"
+    NOM_APP="App Perso"
+    NOM_AFFICHE="App Perso"
     DRAPEAUX=(-D COMPTE_PERSO)
 fi
 APP="$SORTIE/$NOM_APP.app"
@@ -212,6 +213,8 @@ if [ "$PERSO" = 1 ]; then
     plutil -replace CFBundleIdentifier -string "$ID_BUNDLE_PERSO" "$NOUVELLE/Contents/Info.plist"
     plutil -replace CFBundleName -string "$NOM_AFFICHE" "$NOUVELLE/Contents/Info.plist"
     plutil -replace CFBundleDisplayName -string "$NOM_AFFICHE" "$NOUVELLE/Contents/Info.plist"
+    # Les phrases d'autorisation (micro, dossiers…) parlent aussi de l'app par son nom.
+    sed -i '' "s/Complète-Cours/$NOM_AFFICHE/g" "$NOUVELLE/Contents/Info.plist"
 fi
 cp "$INTERM/AppIcon.icns" "$NOUVELLE/Contents/Resources/AppIcon.icns"
 printf 'APPL????' > "$NOUVELLE/Contents/PkgInfo"
@@ -320,6 +323,9 @@ if [ "$INSTALLER" = 1 ]; then
     info "Installée : $DESTINATION"
     if [ "$PERSO" = 0 ] && [ -e "$DOSSIER_INSTALL/Complète-Cours.app" ]; then
         avertir "une ancienne copie « Complète-Cours.app » existe encore dans ~/Applications ; supprime-la pour éviter la confusion."
+    fi
+    if [ "$PERSO" = 1 ] && [ -e "$DOSSIER_INSTALL/Complete-Cours-perso.app" ]; then
+        avertir "l'ancienne copie « Complete-Cours-perso.app » (avant le changement de nom en « App Perso ») existe encore dans ~/Applications ; supprime-la pour éviter la confusion."
     fi
     if [ -e "/Applications/$NOM_APP.app" ]; then
         avertir "une autre copie existe dans /Applications ; elle n'est pas modifiée (supprime-la pour éviter la confusion)."

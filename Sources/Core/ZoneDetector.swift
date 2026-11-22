@@ -259,6 +259,15 @@ enum ZoneDetector {
             }
             // (les cadres sont les derniers brouillons : retirer des indices ne décale pas les pointillés du texte)
             if !dropped.isEmpty { drafts = drafts.enumerated().filter { !dropped.contains($0.offset) }.map { $0.element } }
+
+            // 3d. scan sans aucune ligne ni case à remplir : les réponses vont dans les blancs, après les consignes
+            if drafts.isEmpty, !hasText {
+                // lecture du scan (OCR) seulement pour cette page sans trou trouvé, même si l'IA a la vision
+                if layout.meaningfulCharCount < 20 { layout = OCR.layout(image: img, geometry: geo) }
+                if layout.meaningfulCharCount >= 20 {
+                    drafts = implicitSpaces(layout: layout, gray: gray, geo: geo, pageIndex: index, body: layout.bodyHeight)
+                }
+            }
         }
 
         // 4. ordre de lecture et numérotation
@@ -290,6 +299,56 @@ enum ZoneDetector {
         }
         return PageAnalysis(pageIndex: index, zones: zones, transcript: transcript, hasTextLayer: hasText,
                             rotationUnsupported: false, fontSize: fontSize)
+    }
+
+    // MARK: - Espaces libres après une consigne (scans sans lignes)
+
+    private static let instructionCue = "^(\\(?\\d+[\\).]?\\s*)?(calcule|determine|represente|compare|justifie|explique|donne|cite|complete|trace|dessine|ecris|indique|resume|decris|nomme|precise|deduis|convertis|detaille|quelle|quel|quels|quelles|combien|pourquoi|comment|en quoi|cette experience|est-ce)"
+
+    /// Propose les espaces blancs qui suivent une consigne (à droite sur la même ligne, ou juste dessous).
+    /// Ces zones sont DÉSACTIVÉES et douteuses : une proposition à confirmer, jamais remplie d'office.
+    static func implicitSpaces(layout: TextLayout, gray: GrayBitmap, geo: PageGeometry, pageIndex: Int, body: CGFloat) -> [Zone] {
+        let pageRect = CGRect(origin: geo.origin, size: geo.displaySize)
+        let left = pageRect.minX + 24, right = pageRect.maxX - 30
+        var out: [Zone] = []
+        for (i, tl) in layout.lines.enumerated() {
+            let folded = ZoneKindRules.fold(tl.text).trimmingCharacters(in: .whitespaces)
+            let isCue = folded.range(of: instructionCue, options: .regularExpression) != nil || folded.hasSuffix("?")
+            guard isCue, folded.count >= 12 else { continue }
+            let h = max(tl.bbox.height, 8)
+            // pas dans les marges de la page
+            let fromTop = (pageRect.maxY - tl.bbox.midY) / pageRect.height
+            guard fromTop > 0.08, fromTop < 0.94 else { continue }
+            let others = layout.lines.enumerated().filter { $0.offset != i }.map { $0.element.bbox }
+            var candidate: CGRect?
+            var why = ""
+            let rightX = tl.bbox.maxX + 10
+            if right - rightX >= 150 {
+                // la réponse tient souvent sur deux lignes : on descend jusqu'au prochain texte (au plus 2,4 lignes)
+                var bottom = tl.bbox.minY - 1.4 * h
+                for o in others where o.maxX > rightX && o.minX < right && o.maxY < tl.bbox.maxY - 0.3 * h { bottom = max(bottom, o.maxY + 2) }
+                let r = CGRect(x: rightX, y: bottom, width: right - rightX, height: tl.bbox.maxY + 3 - bottom)
+                if r.height >= h, !others.contains(where: { $0.intersects(CGRect(x: r.minX, y: tl.bbox.minY, width: r.width, height: h).insetBy(dx: 0, dy: 1)) }) { candidate = r; why = "espace libre à droite de la consigne" }
+            }
+            if candidate == nil {
+                let below = others.filter { $0.maxY <= tl.bbox.minY + 1 && min($0.maxX, tl.bbox.maxX + 200) > tl.bbox.minX && $0.minX < tl.bbox.maxX }
+                let gapTo = below.map { tl.bbox.minY - $0.maxY }.min() ?? (tl.bbox.minY - (pageRect.minY + 40))
+                if gapTo >= 2.4 * h {
+                    let bh = min(gapTo - 8, 80)
+                    candidate = CGRect(x: max(left, tl.bbox.minX), y: tl.bbox.minY - 4 - bh, width: right - max(left, tl.bbox.minX), height: bh)
+                    why = "espace libre sous la consigne"
+                }
+            }
+            guard let r = candidate, r.width > 60, r.height > 8, darkShare(r, gray: gray, geo: geo) < 0.015 else { continue }
+            if out.contains(where: { $0.rect.intersects(r) }) { continue }
+            var z = Zone(id: 0, page: pageIndex, number: 0, source: .cadre)
+            z.box = r
+            z.confidence = 0.45
+            z.signals = [why + " (aucune ligne dessinée : à confirmer)"]
+            z.enabled = false
+            out.append(z)
+        }
+        return out
     }
 
     // MARK: - Doute sur un « Libellé : »

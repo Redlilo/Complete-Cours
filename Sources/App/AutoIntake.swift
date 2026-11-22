@@ -100,7 +100,7 @@ final class AutoIntake: NSObject, ObservableObject, UNUserNotificationCenterDele
         // la première lecture déclenche la demande d'autorisation de macOS pour Téléchargements
         do { _ = try FileManager.default.contentsOfDirectory(atPath: folder.path); problem = nil; return true }
         catch {
-            problem = "macOS n'a pas autorisé l'accès au dossier « \(folder.lastPathComponent) ». Ouvre Réglages Système › Confidentialité et sécurité › Fichiers et dossiers (ou Accès complet au disque), puis autorise Complète-Cours pour ce dossier."
+            problem = "macOS n'a pas autorisé l'accès au dossier « \(folder.lastPathComponent) ». Ouvre Réglages Système › Confidentialité et sécurité › Fichiers et dossiers (ou Accès complet au disque), puis autorise \(AppIdentity.nom) pour ce dossier."
             return false
         }
     }

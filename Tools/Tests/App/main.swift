@@ -43,6 +43,12 @@ final class ScriptedDialogs: Dialogs {
         confirms.append((title, message))
         return confirmAnswers.isEmpty ? true : confirmAnswers.removeFirst()
     }
+    var chooseAnswers: [Int] = []
+    private(set) var chooses: [(title: String, buttons: [String])] = []
+    func choose(title: String, message: String, buttons: [String]) -> Int {
+        chooses.append((title, buttons))
+        return chooseAnswers.isEmpty ? 0 : chooseAnswers.removeFirst()
+    }
     func inform(title: String, message: String) { informs.append((title, message)) }
     func chooseOpenURL() -> URL? { openURL }
     func chooseSaveURL(suggestedName: String, directory: URL?) -> URL? {
@@ -319,6 +325,24 @@ func testCompletion(_ files: TestPDFs.Files) async {
     model.startCompletion()
     await checkA(await waitUntil { !model.isRunning && model.zones.allSatisfy { $0.answer.lowercased().hasPrefix("nouvelle") } }, "accepté : tout est remplacé")
 
+    // une zone vidée : on propose de ne compléter que les zones vides (les autres réponses sont gardées)
+    let emptied = model.zones.first { $0.enabled && $0.kind != .ignorer }!.id
+    model.setAnswer("", for: emptied)
+    model.setAnswer("ma correction", for: model.zones.first { $0.enabled && $0.kind != .ignorer && $0.id != emptied }!.id)
+    let kept = model.zones.map { $0.answer }
+    engine.answerPrefix = "troisième"
+    dialogs.chooseAnswers = [2]
+    model.startCompletion()
+    check(dialogs.chooses.count == 1 && dialogs.chooses[0].buttons == ["Seulement la zone vide", "Tout refaire", "Annuler"] && !model.isRunning,
+          "choix proposé ; « Annuler » ne lance rien")
+    dialogs.chooseAnswers = [0]
+    let confirmsBefore = dialogs.confirms.count
+    model.startCompletion()
+    await checkA(await waitUntil { !model.isRunning && model.zone(emptied)?.answer.isEmpty == false }, "la zone vide est complétée")
+    check(model.zone(emptied)?.answer.lowercased().hasPrefix("troisième") == true, "réponse neuve pour la zone vide")
+    check(zip(model.zones, kept).allSatisfy { $0.0.id == emptied || $0.0.answer == $0.1 }, "les autres réponses (et la correction) sont gardées")
+    check(dialogs.confirms.count == confirmsBefore, "pas de confirmation « tout remplacer »")
+
     // moteur qui ignore une zone
     let ig = FakeEngine()
     ig.ignoreZoneNumbers = [1]
@@ -542,7 +566,8 @@ func testSaving(_ files: TestPDFs.Files, dir: URL) async {
         else { skip("export : le rendu est encore un squelette (\(failedInform.message))") }
     } else {
         check(FileManager.default.fileExists(atPath: out.path), "le PDF complété existe")
-        check(dialogs.revealed == [out], "révélé dans le Finder")
+        check(dialogs.revealed.isEmpty, "le Finder ne s'ouvre pas tout seul")
+        check(model.notice?.sheetURL == out, "« Faire la fiche de ce cours » proposé")
         check(!model.hasUnsavedChanges, "plus de travail non enregistré")
         if let doc = PDFDocument(url: out) { check(doc.pageCount == 2, "même nombre de pages") } else { check(false, "PDF de sortie illisible") }
         check(model.notice?.revealURL == out, "message avec lien vers le fichier")

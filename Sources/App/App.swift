@@ -12,6 +12,12 @@ enum Launcher {
         if CommandLine.arguments.contains("--archive-originals") {
             ArchiveCLI.runAndExit(CommandLine.arguments)
         }
+        #if COMPTE_PERSO
+        // Relevé de prix quotidien sans fenêtre (tâche macOS) : « App Perso --suivi-releve ».
+        if CommandLine.arguments.contains("--suivi-releve") {
+            SuiviMacCLI.runAndExit()
+        }
+        #endif
         CompleteCoursApp.main()
     }
 }
@@ -26,7 +32,7 @@ struct CompleteCoursApp: App {
     }
 
     var body: some Scene {
-        Window("Complète-Cours", id: "main") {
+        Window(AppIdentity.nom, id: "main") {
             MainShell()
                 .environmentObject(model)
                 .environmentObject(engines)
@@ -54,7 +60,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        CoursModel.shared.confirmLeavingCurrentWork(action: "quittes l'application") ? .terminateNow : .terminateCancel
+        guard CoursModel.shared.confirmLeavingCurrentWork(action: "quittes l'application") else { return .terminateCancel }
+        let lecture = LectureModel.shared
+        guard lecture.occupe else { return .terminateNow }
+        // Un cours est écouté (ou sa transcription se termine) : on ne le perd pas en quittant.
+        let alert = NSAlert()
+        alert.messageText = "Un cours est en train d'être écouté"
+        alert.informativeText = "Si tu quittes, l'app arrête l'écoute, finit d'écrire le texte de ce qui a été enregistré (jusqu'à une minute), puis se ferme. Le cours t'attendra dans « À relire »."
+        alert.addButton(withTitle: "Continuer l'écoute")
+        alert.addButton(withTitle: "Arrêter et quitter")
+        guard alert.runModal() == .alertSecondButtonReturn else { return .terminateCancel }
+        lecture.terminer()
+        Task { @MainActor in
+            let limite = Date().addingTimeInterval(60)
+            while lecture.occupe, Date() < limite { try? await Task.sleep(for: .milliseconds(300)) }
+            NSApp.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -82,7 +104,12 @@ struct AppCommands: Commands {
         CommandGroup(replacing: .newItem) {
             Button("Ouvrir…") {
                 switch Navigator.shared.mode {
-                case .fiches, .evaluations: RevisionModel.live.chooseDocument()
+                case .fiches: RevisionModel.live.chooseDocument()
+                case .evaluations: RevisionModel.evaluations.chooseDocument()
+                case .ecouter: break
+                #if COMPTE_PERSO
+                case .suiviMac: break
+                #endif
                 case .bibliotheque, .completer:
                     Navigator.shared.mode = .completer
                     model.presentOpenPanel()

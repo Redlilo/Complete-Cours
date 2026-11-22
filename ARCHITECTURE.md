@@ -44,11 +44,21 @@ Sources/Core/       (module partagé, compilé avec l'app et avec les outils de 
   ContentIndex.swift    index local du contenu des PDF (recherche par mot), cache persistant, jamais d'évaluation
   CompletionStatus.swift  trous encore vides d'un PDF (annotations, encre, faux trous écartés)
   CostEstimate.swift    estimation de coût avant un lot de complétion
+  RevisionMemoire.swift  mémoire par PDF de ce que l'IA a produit en révision (fiche, questions, cartes, corrigé) :
+                        reprise sans nouvel appel ; invalidée si le PDF change (taille, date)
   FolderWatcher.swift   dépôt automatique : surveillance d'un dossier, filtre de vie privée, rangement
   LibraryTree.swift     bibliothèque : arborescence des PDF du dossier des cours (même rangement que sur le disque),
                         lignes affichées, recherche, reconnaissance des évaluations (testé par Tools/Tests/Library)
   AnswerRenderer.swift  écriture des réponses dans le PDF + export                        [agent « rendu »]
-Sources/App/        l'application SwiftUI (aussi : Batch.swift complétion en lot, Archive.swift, Duplicates.swift, AutoIntake.swift, Recents.swift, Style.swift look commun) : MainShell (barre latérale 4 parties) · Navigation (modes, passerelles) · Library (bibliothèque)                                                [agent « interface »]
+  Lecture.swift         « Écouter un cours » : modèles, prénoms retirés, corrections de transcription, tri puis fiche par l'IA
+                        des Réglages (StructuredGenerator), stockage JSON (testé par Tools/Tests/Lecture)
+  LectureVoix.swift     voix des profs : retenue toute seule aux premiers cours (la voix qui parle le plus, pondérée par ce qui est
+                        dit), puis élèves repérés ; seule l'empreinte du prof est gardée. EXCEPTION à « rien d'externe » : le calcul
+                        des empreintes passe par l'outil optionnel voice.py d'Écoute-Cours (Python) ; s'il est absent, seule la
+                        reconnaissance d'après le texte reste active (LectureTexte.indiceProf).
+  LectureAudio.swift    micro par morceaux (AVAudioEngine) + transcription sur le Mac (SpeechAnalyzer, macOS 26) ; l'audio
+                        est effacé dès que le texte existe
+Sources/App/        l'application SwiftUI (aussi : LectureModel.swift + LectureView.swift = partie « Écouter un cours » (⌘5) ; Batch.swift complétion en lot, Archive.swift, Duplicates.swift, AutoIntake.swift, Recents.swift, Style.swift look commun) : MainShell (barre latérale 4 parties) · Navigation (modes, passerelles) · Library (bibliothèque)                                                [agent « interface »]
 Tools/Harness/      outil CLI de test de la détection (voir plus bas)                    [Claude principal]
 Tools/Tests/<x>/    tests propres à chaque agent
 build.sh, Resources/, Distribution/LISEZMOI.txt, README.md   empaquetage .app, icône, doc                          [agent « paquet »]

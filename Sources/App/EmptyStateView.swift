@@ -42,7 +42,7 @@ struct EmptyStateView: View {
             .accessibilityHidden(true)
             Text(dropTargeted ? "Lâche le PDF ici" : "Glisse un PDF de cours ici")
                 .font(.system(size: 22, weight: .bold, design: .rounded))
-            Text("Fiche à trous, questions, définitions, tableau ou formulaire : Complète-Cours trouve les zones à remplir et écrit les réponses.")
+            Text("Fiche à trous, questions, définitions, tableau ou formulaire : \(AppIdentity.nom) trouve les zones à remplir et écrit les réponses.")
                 .font(.body)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)

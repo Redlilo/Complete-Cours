@@ -21,7 +21,8 @@ final class ScriptedDialogs: RevisionDialogs {
     private(set) var informs: [String] = []
     private(set) var revealed: [URL] = []
     func chooseOpenURL() -> URL? { openURL }
-    func chooseSaveURL(suggestedName: String) -> URL? { saveURL }
+    private(set) var saveDirectories: [URL?] = []
+    func chooseSaveURL(suggestedName: String, directory: URL?) -> URL? { saveDirectories.append(directory); return saveURL }
     func inform(title: String, message: String) { informs.append(title) }
     func reveal(_ url: URL) { revealed.append(url) }
 }
@@ -91,7 +92,10 @@ func run() async {
         d.saveURL = out
         m.saveSummaryPDF(); await m.waitUntilIdle()
         check((try? Data(contentsOf: out))?.starts(with: Data("%PDF".utf8)) == true, "PDF enregistré")
-        check(m.notice?.contains("fiche.pdf") == true && d.revealed == [out], "message et affichage dans le Finder")
+        check(m.notice?.contains("fiche.pdf") == true && d.revealed.isEmpty && m.lastSaved == out, "message, sans ouvrir le Finder tout seul")
+        check(d.saveDirectories.last == pdf.deletingLastPathComponent(), "enregistrement proposé dans le dossier du cours")
+        m.revealLastSaved()
+        check(d.revealed == [out], "« Afficher dans le Finder » sur demande")
         d.saveURL = pdf
         m.saveSummaryPDF(); await m.waitUntilIdle()
         check(d.informs == ["Ton cours d'origine est protégé"] && (try? Data(contentsOf: pdf)) == pdfBytes, "l'original n'est jamais écrasé")
@@ -163,6 +167,45 @@ func run() async {
         let other = makePDF("autre.pdf")
         m.open(other)
         check(m.corrigeItems.isEmpty && !m.corrigeConfirmed, "nouveau document : case décochée")
+        m.open(pdf); m.corrigeConfirmed = true
+        m.makeCorrige(); await m.waitUntilIdle()
+        check(m.sortedCorrigeItems.map(\.id) == [1, 2], "corrigé : la question fausse d'abord")
+        check(m.corrigeMistakes.map(\.id) == [1], "erreurs : seulement la fausse")
+        let callsBefore = svc.calls.count
+        m.cardsFromCorrige()
+        check(m.cards.count == 1 && m.cards[0].front == "Donne l'unité de la résistance." && m.cards[0].back.contains("À retenir : R en ohms")
+              && m.tab == .cartes && m.deck.count == 1 && svc.calls.count == callsBefore, "cartes à partir des erreurs, sans IA")
+    }
+
+    section("Mémoire par PDF")
+    do {
+        let dir = scratch.appendingPathComponent("memoire")
+        let store = RevisionMemoireStore(dossier: dir)
+        let mem = makePDF("memoire.pdf")
+        let svc = FakeRevisionService()
+        let m = RevisionModel(engineStatus: { usable }, makeService: { svc }, exporter: FakeRevisionExporter(),
+                              dialogs: ScriptedDialogs(), memoire: store)
+        m.open(mem)
+        check(m.summary == nil && m.notice == nil, "rien à reprendre au premier passage")
+        m.makeSummary(); await m.waitUntilIdle()
+        m.makeCards(); await m.waitUntilIdle()
+        try? await Task.sleep(nanoseconds: 300_000_000)      // écriture en arrière-plan
+        let other = makePDF("autre-memoire.pdf")
+        m.open(other)
+        check(m.summary == nil && m.cards.isEmpty, "autre cours : rien de repris")
+        let calls = svc.calls.count
+        m.open(mem)
+        check(m.summary != nil && m.cards.count == 5 && m.deck.count == 5 && svc.calls.count == calls, "fiche et cartes reprises sans IA")
+        check(m.notice?.contains("la fiche et les cartes") == true, "message de reprise", m.notice ?? "nil")
+        let fresh = RevisionModel(engineStatus: { usable }, makeService: { svc }, exporter: FakeRevisionExporter(),
+                                  dialogs: ScriptedDialogs(), memoire: store)
+        fresh.open(mem)
+        check(fresh.summary != nil, "reprise après un redémarrage")
+        // le PDF change : la mémoire ne vaut plus
+        try? await Task.sleep(nanoseconds: 1_100_000_000)
+        let doc = PDFDocument(url: mem); doc?.removePage(at: 2); doc?.write(to: mem)
+        fresh.open(mem)
+        check(fresh.summary == nil && fresh.cards.isEmpty, "PDF modifié : rien de repris")
     }
 
     section("Erreurs de moteur")
@@ -289,13 +332,13 @@ func run() async {
         let out = scratch.appendingPathComponent("cartes.pdf")
         d.saveURL = out
         m.exportCardsPDF(); await m.waitUntilIdle()
-        check(String(data: (try? Data(contentsOf: out)) ?? Data(), encoding: .utf8)?.contains("cartes 5") == true && d.revealed == [out], "export PDF des cartes")
+        check(String(data: (try? Data(contentsOf: out)) ?? Data(), encoding: .utf8)?.contains("cartes 5") == true && m.lastSaved == out, "export PDF des cartes")
         d.saveURL = pdf
         m.exportCardsPDF(); await m.waitUntilIdle()
         check(d.informs.last == "Ton cours d'origine est protégé" && (try? Data(contentsOf: pdf)) == pdfBytes, "l'original n'est jamais écrasé")
 
         m.replayCardsToReview()
-        check(m.deck.map(\.id) == [2, 3] && m.cardRound == 2 && !m.cardsFinished && m.cardIndex == 0 && m.cardKnown.isEmpty && m.cards.count == 5, "paquet « à revoir » rejoué")
+        check(Set(m.deck.map(\.id)) == [2, 3] && m.cardRound == 2 && !m.cardsFinished && m.cardIndex == 0 && m.cardKnown.isEmpty && m.cards.count == 5, "paquet « à revoir » rejoué")
         m.flipCard(); m.markCard(known: true); m.flipCard(); m.markCard(known: true)
         check(m.cardsFinished && m.cardsScoreText == "2 sur 2" && m.cardsToReview.isEmpty, "série de rattrapage réussie")
         m.replayCardsToReview()

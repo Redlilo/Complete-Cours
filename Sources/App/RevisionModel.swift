@@ -47,7 +47,7 @@ protocol RevisionExporting: Sendable {
 @MainActor
 protocol RevisionDialogs: AnyObject {
     func chooseOpenURL() -> URL?
-    func chooseSaveURL(suggestedName: String) -> URL?
+    func chooseSaveURL(suggestedName: String, directory: URL?) -> URL?
     func inform(title: String, message: String)
     func reveal(_ url: URL)
 }
@@ -64,13 +64,14 @@ final class AppKitRevisionDialogs: RevisionDialogs {
         return panel.runModal() == .OK ? panel.url : nil
     }
 
-    func chooseSaveURL(suggestedName: String) -> URL? {
+    func chooseSaveURL(suggestedName: String, directory: URL?) -> URL? {
         let panel = NSSavePanel()
         panel.title = "Enregistrer en PDF"
         panel.prompt = "Enregistrer"
         panel.allowedContentTypes = [.pdf]
         panel.canCreateDirectories = true
         panel.nameFieldStringValue = suggestedName
+        if let directory { panel.directoryURL = directory }
         return panel.runModal() == .OK ? panel.url : nil
     }
 
@@ -147,6 +148,8 @@ final class RevisionModel: ObservableObject {
     @Published private(set) var activity: Activity?
     @Published var issue: RevisionIssue?
     @Published private(set) var notice: String?
+    /// Dernier PDF enregistré (bouton « Afficher dans le Finder » du message).
+    @Published private(set) var lastSaved: URL?
     // Fiche
     @Published private(set) var summary: RevisionSummary?
     // Entraînement
@@ -178,6 +181,7 @@ final class RevisionModel: ObservableObject {
     private let makeService: () throws -> RevisionProviding
     private let exporter: RevisionExporting
     private let dialogs: RevisionDialogs
+    private let memoire: RevisionMemoireStore?
     private var source: RevisionSource?
     private var sourceHasImages = false
     private var token = UUID()
@@ -186,11 +190,13 @@ final class RevisionModel: ObservableObject {
     init(engineStatus: @escaping () -> RevisionEngineStatus,
          makeService: @escaping () throws -> RevisionProviding,
          exporter: RevisionExporting,
-         dialogs: RevisionDialogs) {
+         dialogs: RevisionDialogs,
+         memoire: RevisionMemoireStore? = nil) {
         self.engineStatus = engineStatus
         self.makeService = makeService
         self.exporter = exporter
         self.dialogs = dialogs
+        self.memoire = memoire
         self.engine = engineStatus()
     }
 
@@ -252,8 +258,37 @@ final class RevisionModel: ObservableObject {
         corrigeConfirmed = false
         issue = nil
         notice = nil
+        lastSaved = nil
         refreshEngine()
+        restaurer(url)
     }
+
+    // MARK: Mémoire (ce que l'IA a déjà fait pour ce PDF)
+
+    /// Reprend la fiche, les questions, les cartes et le corrigé du dernier passage : aucun nouvel appel à l'IA.
+    private func restaurer(_ url: URL) {
+        guard let m = memoire?.charger(url) else { return }
+        summary = m.summary
+        if !m.questions.isEmpty { beginQuiz(m.questions) }
+        if !m.cards.isEmpty { cards = m.cards; beginDeck(m.cards) }
+        if !m.corrige.isEmpty { corrigeItems = m.corrige; corrigeConfirmed = true }
+        var repris: [String] = []
+        if m.summary != nil { repris.append("la fiche") }
+        if !m.questions.isEmpty { repris.append("les questions") }
+        if !m.cards.isEmpty { repris.append("les cartes") }
+        if !m.corrige.isEmpty { repris.append("le corrigé") }
+        notice = "Repris de ton dernier passage, sans nouvel appel à l'IA : \(Fr.list(repris))."
+    }
+
+    /// Garde ce qui vient d'être créé, pour le reprendre la prochaine fois que ce PDF est ouvert.
+    private func memoriser() {
+        guard let memoire, let url = documentURL else { return }
+        let m = RevisionMemoire(summary: summary, questions: memorisedQuestions, cards: cards, corrige: corrigeItems)
+        Task.detached(priority: .utility) { memoire.sauver(m, pour: url) }
+    }
+
+    /// Questions de la dernière création (pas la série « ratées » en cours, qui n'en est qu'une partie).
+    private var memorisedQuestions: [RevisionQuestion] = []
 
     func closeDocument() {
         cancel(silently: true)
@@ -411,6 +446,7 @@ final class RevisionModel: ObservableObject {
             let result = try await service.makeSummary(source, instruction: instruction, progress: self.progressHandler(t, scale: 0.2...1))
             guard self.isCurrent(t) else { throw CancellationError() }
             self.summary = result
+            self.memoriser()
         }
     }
 
@@ -468,10 +504,13 @@ final class RevisionModel: ObservableObject {
             }
             self.beginQuiz(result)
             self.round = 1
+            self.memorisedQuestions = result
+            self.memoriser()
         }
     }
 
     private func beginQuiz(_ list: [RevisionQuestion]) {
+        if round == 1 { memorisedQuestions = list }
         questions = list
         answers = [:]
         graded = [:]
@@ -591,6 +630,7 @@ final class RevisionModel: ObservableObject {
             self.cards = result
             self.beginDeck(result)
             self.cardRound = 1
+            self.memoriser()
         }
     }
 
@@ -631,14 +671,14 @@ final class RevisionModel: ObservableObject {
     func replayCardsToReview() {
         let list = cardsToReview
         guard !list.isEmpty else { return }
-        beginDeck(list)
+        beginDeck(list.shuffled())       // un autre ordre à chaque série : on retient la réponse, pas sa place
         cardRound += 1
     }
 
     /// Rejoue tout le paquet depuis le début.
     func restartCards() {
         guard !cards.isEmpty else { return }
-        beginDeck(cards)
+        beginDeck(cards.shuffled())
         cardRound = 1
     }
 
@@ -667,6 +707,7 @@ final class RevisionModel: ObservableObject {
             let result = try await service.makeCorrige(source, progress: self.progressHandler(t, scale: 0.2...1))
             guard self.isCurrent(t) else { throw CancellationError() }
             self.corrigeItems = result
+            self.memoriser()
             if result.isEmpty {
                 throw RevisionIssueError(issue: RevisionIssue(
                     title: "Le corrigé est vide",
@@ -674,6 +715,30 @@ final class RevisionModel: ObservableObject {
                     todo: "Vérifie que c'est bien ton évaluation rendue, avec tes réponses visibles."))
             }
         }
+    }
+
+    /// Le corrigé trié pour l'écran : les questions fausses d'abord, puis les partielles, puis le reste (ordre de la feuille).
+    var sortedCorrigeItems: [CorrigeItem] {
+        func rang(_ v: Verdict?) -> Int { v == .faux ? 0 : (v == .partiel ? 1 : 2) }
+        return corrigeItems.enumerated().sorted { (rang($0.element.status), $0.offset) < (rang($1.element.status), $1.offset) }.map(\.element)
+    }
+
+    /// Questions à retravailler : fausses ou partielles, et celles que le professeur n'a pas marquées.
+    var corrigeMistakes: [CorrigeItem] { corrigeItems.filter { $0.status != .juste } }
+
+    /// « Cartes à partir de mes erreurs » : fabriquées sur le Mac à partir du corrigé, sans appel à l'IA.
+    func cardsFromCorrige() {
+        guard !isBusy, !corrigeMistakes.isEmpty else { return }
+        let list = corrigeMistakes.enumerated().map { i, item in
+            RevisionCard(id: i + 1, front: item.instruction,
+                         back: item.toRemember.isEmpty ? item.correctAnswer : "\(item.correctAnswer)\n\nÀ retenir : \(item.toRemember)",
+                         page: item.page)
+        }
+        cards = list
+        beginDeck(list)
+        cardRound = 1
+        tab = .cartes
+        memoriser()
     }
 
     func saveCorrigePDF() {
@@ -686,8 +751,11 @@ final class RevisionModel: ObservableObject {
 
     // MARK: Enregistrement (nouveau PDF, jamais l'original)
 
+    func revealLastSaved() { if let lastSaved { dialogs.reveal(lastSaved) } }
+
     private func save(suggested: String, failure: String, _ make: @escaping @Sendable () throws -> Data) {
-        guard !isBusy, let target = dialogs.chooseSaveURL(suggestedName: suggested) else { return }
+        guard !isBusy, let target = dialogs.chooseSaveURL(suggestedName: suggested,
+                                                          directory: documentURL?.deletingLastPathComponent()) else { return }
         if let original = documentURL, target.standardizedFileURL == original.standardizedFileURL {
             dialogs.inform(title: "Ton cours d'origine est protégé",
                            message: "Choisis un autre nom : l'original n'est jamais modifié.")
@@ -698,7 +766,7 @@ final class RevisionModel: ObservableObject {
             try data.write(to: target, options: .atomic)
             guard let self, self.isCurrent(t) else { return }
             self.notice = "Enregistré : \(target.lastPathComponent)."
-            self.dialogs.reveal(target)
+            self.lastSaved = target
         }
     }
 }

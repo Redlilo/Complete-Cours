@@ -60,7 +60,7 @@ struct ZonePanel: View {
                     .accessibilityHidden(true)
                 Text(model.answeredCount == model.zonesToFill
                      ? "Tout est rempli : relis, puis enregistre le PDF."
-                     : "\(model.zonesToFill - model.answeredCount) zone(s) encore vide(s).")
+                     : "\(Fr.zones(model.zonesToFill - model.answeredCount)) encore \(Fr.plural(model.zonesToFill - model.answeredCount, "vide", "vides")).")
                     .font(.caption).foregroundStyle(.secondary)
             }
             humanizeCard
@@ -161,6 +161,10 @@ struct ZonePanel: View {
                    title: nil, text: notice.text, dismiss: { model.dismissNotice() }) {
                 if let url = notice.revealURL {
                     Button("Afficher dans le Finder") { model.revealInFinder(url) }
+                }
+                if let url = notice.sheetURL {
+                    Button("Faire la fiche de ce cours") { Recents.shared.touch(url); Navigator.shared.makeSheet(url) }
+                        .help("Ouvre le PDF complété dans « Fiches de révision »")
                 }
                 if notice.offersRetry, model.failedZoneCount > 0 {
                     Button("Réessayer les zones en erreur") { model.retryFailedZones() }
@@ -263,7 +267,7 @@ struct EmptyZonesView: View {
                 .font(.headline)
                 .multilineTextAlignment(.center)
             if model.canDrawZone {
-                Text("Ce PDF n'a pas de trou que Complète-Cours reconnaît. Tu peux ajouter une zone à la main : clique sur « Ajouter une zone », puis tire un rectangle autour de l'endroit à remplir.")
+                Text("Ce PDF n'a pas de trou que \(AppIdentity.nom) reconnaît. Tu peux ajouter une zone à la main : clique sur « Ajouter une zone », puis tire un rectangle autour de l'endroit à remplir.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)

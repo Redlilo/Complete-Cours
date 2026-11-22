@@ -7,6 +7,8 @@ import UniformTypeIdentifiers
 protocol Dialogs: AnyObject {
     /// Question à deux réponses. `destructive` : le bouton par défaut est « annuler » (action risquée).
     func confirm(title: String, message: String, accept: String, cancel: String, destructive: Bool) -> Bool
+    /// Question à plusieurs réponses : renvoie l'index du bouton choisi (le premier est le bouton par défaut).
+    func choose(title: String, message: String, buttons: [String]) -> Int
     func inform(title: String, message: String)
     func chooseOpenURL() -> URL?
     func chooseSaveURL(suggestedName: String, directory: URL?) -> URL?
@@ -28,6 +30,15 @@ final class AppKitDialogs: Dialogs {
         alert.addButton(withTitle: accept)
         alert.addButton(withTitle: cancel)
         return alert.runModal() == .alertFirstButtonReturn
+    }
+
+    func choose(title: String, message: String, buttons: [String]) -> Int {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.alertStyle = .informational
+        for b in buttons { alert.addButton(withTitle: b) }
+        return alert.runModal().rawValue - NSApplication.ModalResponse.alertFirstButtonReturn.rawValue
     }
 
     func inform(title: String, message: String) {
@@ -69,6 +80,7 @@ final class AppKitDialogs: Dialogs {
 @MainActor
 final class SilentDialogs: Dialogs {
     func confirm(title: String, message: String, accept: String, cancel: String, destructive: Bool) -> Bool { true }
+    func choose(title: String, message: String, buttons: [String]) -> Int { 0 }
     func inform(title: String, message: String) {}
     func chooseOpenURL() -> URL? { nil }
     func chooseSaveURL(suggestedName: String, directory: URL?) -> URL? { nil }

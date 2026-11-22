@@ -9,8 +9,10 @@ enum Fr {
     static func answers(_ n: Int) -> String { "\(n) \(plural(n, "réponse", "réponses"))" }
 
     /// « 2 », « 2 et 5 », « 2, 5 et 7 ».
-    static func list(_ values: [Int]) -> String {
-        let items = values.map(String.init)
+    static func list(_ values: [Int]) -> String { list(values.map(String.init)) }
+
+    /// « la fiche », « la fiche et les cartes », « la fiche, les questions et les cartes ».
+    static func list(_ items: [String]) -> String {
         switch items.count {
         case 0: return ""
         case 1: return items[0]

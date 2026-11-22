@@ -3,7 +3,10 @@ import AppKit
 
 /// Les grandes parties de l'application, dans l'ordre de la barre latérale.
 enum AppMode: String, CaseIterable, Identifiable {
-    case bibliotheque, completer, fiches, evaluations
+    case bibliotheque, completer, fiches, evaluations, ecouter
+    #if COMPTE_PERSO
+    case suiviMac   // « Suivi MacBook IA » : variante personnelle seulement
+    #endif
 
     var id: String { rawValue }
 
@@ -13,6 +16,10 @@ enum AppMode: String, CaseIterable, Identifiable {
         case .completer: return "Compléter un cours"
         case .fiches: return "Fiches de révision"
         case .evaluations: return "Évaluations"
+        case .ecouter: return "Écouter un cours"
+        #if COMPTE_PERSO
+        case .suiviMac: return "Suivi MacBook IA"
+        #endif
         }
     }
 
@@ -23,6 +30,10 @@ enum AppMode: String, CaseIterable, Identifiable {
         case .completer: return "Remplit les trous et questions"
         case .fiches: return "Fiche, quiz, entraînement"
         case .evaluations: return "Corrigé d'une éval déjà notée"
+        case .ecouter: return "Appuie, parle, la fiche arrive"
+        #if COMPTE_PERSO
+        case .suiviMac: return "Prix et meilleure offre pour l'IA"
+        #endif
         }
     }
 
@@ -32,6 +43,10 @@ enum AppMode: String, CaseIterable, Identifiable {
         case .completer: return "wand.and.stars"
         case .fiches: return "graduationcap"
         case .evaluations: return "checkmark.seal"
+        case .ecouter: return "waveform"
+        #if COMPTE_PERSO
+        case .suiviMac: return "laptopcomputer"
+        #endif
         }
     }
 
@@ -41,6 +56,10 @@ enum AppMode: String, CaseIterable, Identifiable {
         case .completer: return "2"
         case .fiches: return "3"
         case .evaluations: return "4"
+        case .ecouter: return "5"
+        #if COMPTE_PERSO
+        case .suiviMac: return "6"
+        #endif
         }
     }
 }
@@ -69,7 +88,7 @@ final class Navigator: ObservableObject {
 
     func correct(_ url: URL) {
         mode = .evaluations
-        let revision = RevisionModel.live
+        let revision = RevisionModel.evaluations
         if revision.documentURL?.standardizedFileURL != url.standardizedFileURL { revision.open(url) }
         revision.tab = .apres
     }

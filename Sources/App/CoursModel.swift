@@ -49,6 +49,8 @@ struct Notice: Equatable, Identifiable {
     var style: Style
     var text: String
     var revealURL: URL? = nil
+    /// Propose « Faire la fiche de ce cours » (après l'enregistrement du PDF complété).
+    var sheetURL: URL? = nil
     /// Propose le bouton « Réessayer les zones en erreur ».
     var offersRetry = false
 }
@@ -182,7 +184,7 @@ final class CoursModel: ObservableObject {
     var skippedPagesMessage: String? {
         guard !skippedPages.isEmpty else { return nil }
         if skippedPages.count >= pageCount {
-            return "Les pages de ce PDF sont tournées : Complète-Cours ne sait pas encore les analyser. Dans Aperçu, remets-les à l'endroit (Outils > Pivoter), enregistre, puis rouvre le PDF."
+            return "Les pages de ce PDF sont tournées : \(AppIdentity.nom) ne sait pas encore les analyser. Dans Aperçu, remets-les à l'endroit (Outils > Pivoter), enregistre, puis rouvre le PDF."
         }
         let which = Fr.pageList(skippedPages)
         let verb = skippedPages.count > 1 ? "sont tournées" : "est tournée"
@@ -216,7 +218,7 @@ final class CoursModel: ObservableObject {
         }
         open(first)
         if pdfs.count > 1 {
-            showProblemMessage("Complète-Cours ouvre un seul PDF à la fois : le premier a été ouvert.")
+            showProblemMessage("\(AppIdentity.nom) ouvre un seul PDF à la fois : le premier a été ouvert.")
         }
         return true
     }
@@ -242,7 +244,7 @@ final class CoursModel: ObservableObject {
             return
         }
         if doc.isLocked, !doc.unlock(withPassword: "") {
-            failOpening("« \(url.lastPathComponent) » est protégé par un mot de passe : Complète-Cours ne peut pas le lire. Ouvre-le dans Aperçu, exporte une copie sans mot de passe (Fichier > Exporter…), puis ouvre cette copie.")
+            failOpening("« \(url.lastPathComponent) » est protégé par un mot de passe : \(AppIdentity.nom) ne peut pas le lire. Ouvre-le dans Aperçu, exporte une copie sans mot de passe (Fichier > Exporter…), puis ouvre cette copie.")
             return
         }
         guard doc.pageCount > 0 else {
@@ -470,7 +472,22 @@ final class CoursModel: ObservableObject {
     /// Bouton « Compléter le cours » (⌘R).
     func startCompletion() {
         guard document != nil, !isBusy else { return }
-        if zones.contains(where: { $0.enabled && $0.kind != .ignorer && !$0.answer.isEmpty }) {
+        let toFill = zones.filter { $0.enabled && $0.kind != .ignorer }
+        let empty = Set(toFill.filter { $0.answer.isEmpty }.map { $0.id })
+        if !empty.isEmpty, empty.count < toFill.count {
+            // déjà des réponses (peut-être corrigées) : par défaut, on ne remplit que les trous restants
+            let n = empty.count
+            let choice = dialogs.choose(
+                title: "\(Fr.zones(n)) \(Fr.plural(n, "est encore vide", "sont encore vides"))",
+                message: "Tu peux compléter seulement \(Fr.plural(n, "cette zone", "ces zones")) : tes réponses actuelles, y compris celles que tu as corrigées, sont gardées. « Tout refaire » remplace toutes les réponses.",
+                buttons: ["Seulement \(Fr.plural(n, "la zone vide", "les zones vides"))", "Tout refaire", "Annuler"])
+            switch choice {
+            case 0: runTask = Task { [weak self] in await self?.complete(only: empty) }; return
+            case 1: break
+            default: return
+            }
+        } else if empty.isEmpty, !toFill.isEmpty {
+            // tout est déjà rempli : on confirme avant de tout remplacer
             let ok = dialogs.confirm(
                 title: "Refaire tout le cours ?",
                 message: "Les réponses actuelles, y compris celles que tu as corrigées, seront remplacées.",
@@ -892,7 +909,7 @@ final class CoursModel: ObservableObject {
             do {
                 try await self.export(to: destination)
                 self.showNotice(.success, "PDF enregistré : \(destination.lastPathComponent).", revealURL: destination)
-                self.dialogs.reveal(destination)
+                self.notice?.sheetURL = destination
             } catch {
                 self.dialogs.inform(title: "L'enregistrement a échoué", message: Fr.sentence(error.localizedDescription))
             }

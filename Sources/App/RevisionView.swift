@@ -11,7 +11,7 @@ struct RevisionRootView: View {
     @Environment(\.openSettings) private var openSettings
     @State private var dropTargeted = false
 
-    private var evaluationsOnly: Bool { tabs == [.apres] }
+    private var evaluationsOnly: Bool { tabs.first == .apres }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -46,9 +46,13 @@ struct RevisionRootView: View {
             }
             if let notice = model.notice {
                 Divider()
-                Label(notice, systemImage: "checkmark.circle").font(.callout).foregroundStyle(.secondary)
-                    .padding(8).frame(maxWidth: .infinity, alignment: .leading)
-                    .accessibilityLabel(notice)
+                HStack {
+                    Label(notice, systemImage: "checkmark.circle").font(.callout).foregroundStyle(.secondary)
+                        .accessibilityLabel(notice)
+                    Spacer()
+                    if model.lastSaved != nil { Button("Afficher dans le Finder") { model.revealLastSaved() }.controlSize(.small) }
+                }
+                .padding(8).frame(maxWidth: .infinity, alignment: .leading)
             }
         }
         .background(Color(nsColor: .windowBackgroundColor))
@@ -65,6 +69,8 @@ struct RevisionRootView: View {
             model.refreshEngine()
             if !tabs.contains(model.tab), let first = tabs.first { model.tab = first }
         }
+        // « Évaluations » : l'onglet des cartes disparaît quand on les efface ; on revient au corrigé
+        .onChange(of: tabs) { _, now in if !now.contains(model.tab), let first = now.first { model.tab = first } }
         // l'élève change de moteur ou ajoute sa clé dans les Réglages : les boutons se débloquent sans rouvrir le cours
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in model.refreshEngine() }
         .onReceive(NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)) { _ in model.refreshEngine() }
@@ -679,10 +685,45 @@ struct CorrigeTab: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading).card()
                 if model.isBusy && model.corrigeItems.isEmpty { SkeletonCard(lines: 4); SkeletonCard(lines: 4) }
-                ForEach(model.corrigeItems) { item in CorrigeCard(item: item) }
+                if !model.corrigeItems.isEmpty { CorrigeSummary(model: model) }
+                ForEach(model.sortedCorrigeItems) { item in CorrigeCard(item: item) }
             }
             .padding(20).frame(maxWidth: 740, alignment: .leading).frame(maxWidth: .infinity)
         }
+    }
+}
+
+/// Bilan du corrigé : combien de justes, partielles, fausses ; cartes mémoire à partir des erreurs.
+struct CorrigeSummary: View {
+    @ObservedObject var model: RevisionModel
+
+    var body: some View {
+        let items = model.corrigeItems
+        let count = { (v: Verdict) in items.filter { $0.status == v }.count }
+        let unmarked = items.filter { $0.status == nil }.count
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Bilan : \(items.count) \(Fr.plural(items.count, "question", "questions"))").font(.headline).accessibilityAddTraits(.isHeader)
+            HStack(spacing: 14) {
+                Label("\(count(.juste)) \(Fr.plural(count(.juste), "juste", "justes"))", systemImage: Verdict.juste.icon).foregroundStyle(Verdict.juste.color)
+                Label("\(count(.partiel)) \(Fr.plural(count(.partiel), "partielle", "partielles"))", systemImage: Verdict.partiel.icon).foregroundStyle(Verdict.partiel.color)
+                Label("\(count(.faux)) \(Fr.plural(count(.faux), "fausse", "fausses"))", systemImage: Verdict.faux.icon).foregroundStyle(Verdict.faux.color)
+                if unmarked > 0 { Label("\(unmarked) non \(Fr.plural(unmarked, "notée", "notées"))", systemImage: "questionmark.circle").foregroundStyle(.secondary) }
+            }
+            .font(.callout.weight(.medium))
+            if count(.faux) + count(.partiel) > 0 {
+                Text("Les questions fausses et partielles sont en premier.").font(.caption).foregroundStyle(.secondary)
+            }
+            if !model.corrigeMistakes.isEmpty {
+                HStack(spacing: 10) {
+                    Button { model.cardsFromCorrige() } label: { Label("Cartes à partir de mes erreurs", systemImage: "rectangle.on.rectangle.angled") }
+                        .disabled(model.isBusy)
+                    Text("Faites sur ton Mac à partir du corrigé : gratuit, sans appel à l'IA.").font(.caption).foregroundStyle(.secondary)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .card(selected: true, padding: 14)
+        .accessibilityElement(children: .contain)
     }
 }
 

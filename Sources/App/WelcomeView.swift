@@ -16,7 +16,7 @@ struct WelcomeView: View {
                     .foregroundStyle(Color.accentColor)
                     .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Bienvenue dans Complète-Cours").font(.title2.weight(.semibold))
+                    Text("Bienvenue dans \(AppIdentity.nom)").font(.title2.weight(.semibold))
                     Text("Pour écrire les réponses, l'app utilise Claude. Il te faut une clé API : 3 petites étapes.")
                         .foregroundStyle(.secondary)
                 }

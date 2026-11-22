@@ -13,7 +13,7 @@ enum Keychain {
         var errorDescription: String? {
             switch status {
             case errSecUserCanceled:
-                return "L'accès au trousseau a été refusé. Autorise Complète-Cours à utiliser la clé, puis réessaie."
+                return "L'accès au trousseau a été refusé. Autorise \(AppIdentity.nom) à utiliser la clé, puis réessaie."
             case errSecAuthFailed, errSecInteractionNotAllowed:
                 return "Le trousseau est verrouillé. Déverrouille-le (ouvre une session ou saisis ton mot de passe), puis réessaie."
             case errSecMissingEntitlement:

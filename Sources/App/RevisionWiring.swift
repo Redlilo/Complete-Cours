@@ -23,7 +23,16 @@ extension RevisionModel {
         engineStatus: { RevisionWiring.status() },
         makeService: { try RevisionWiring.makeService() },
         exporter: LiveRevisionExporter(),
-        dialogs: AppKitRevisionDialogs())
+        dialogs: AppKitRevisionDialogs(),
+        memoire: RevisionMemoireStore())
+
+    /// Modèle à part pour « Évaluations » : ouvrir une évaluation ne touche pas au cours ouvert dans « Fiches ».
+    static let evaluations = RevisionModel(
+        engineStatus: { RevisionWiring.status() },
+        makeService: { try RevisionWiring.makeService() },
+        exporter: LiveRevisionExporter(),
+        dialogs: AppKitRevisionDialogs(),
+        memoire: RevisionMemoireStore())
 }
 
 @MainActor
@@ -84,4 +93,10 @@ enum RevisionWiring {
 struct RevisionWindow: View {
     @ObservedObject private var model = RevisionModel.live
     var body: some View { RevisionRootView(model: model) }
+}
+
+/// Partie « Évaluations » : le corrigé, plus l'onglet des cartes quand elles ont été faites à partir des erreurs.
+struct EvaluationsView: View {
+    @ObservedObject private var model = RevisionModel.evaluations
+    var body: some View { RevisionRootView(model: model, tabs: model.cards.isEmpty ? [.apres] : [.apres, .cartes]) }
 }

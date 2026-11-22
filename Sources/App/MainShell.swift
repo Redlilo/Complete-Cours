@@ -18,7 +18,13 @@ struct MainShell: View {
                     row(.completer)
                     row(.fiches)
                     row(.evaluations)
+                    row(.ecouter)
                 }
+                #if COMPTE_PERSO
+                Section("Perso") {
+                    row(.suiviMac)
+                }
+                #endif
             }
             .navigationSplitViewColumnWidth(min: 220, ideal: 250, max: 290)
             .safeAreaInset(edge: .bottom) { engineChip }
@@ -28,7 +34,11 @@ struct MainShell: View {
                 case .bibliotheque: LibraryView()
                 case .completer: ContentView()
                 case .fiches: RevisionRootView(model: RevisionModel.live, tabs: [.fiche, .cartes, .entrainement])
-                case .evaluations: RevisionRootView(model: RevisionModel.live, tabs: [.apres])
+                case .evaluations: EvaluationsView()
+                case .ecouter: LectureView()
+                #if COMPTE_PERSO
+                case .suiviMac: SuiviMacView()
+                #endif
                 }
             }
             .transition(.opacity)
@@ -45,6 +55,10 @@ struct MainShell: View {
         case .completer: return .purple
         case .fiches: return .green
         case .evaluations: return .orange
+        case .ecouter: return .red
+        #if COMPTE_PERSO
+        case .suiviMac: return .teal
+        #endif
         }
     }
 
