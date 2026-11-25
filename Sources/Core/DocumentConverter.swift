@@ -3,7 +3,7 @@ import AppKit
 
 /// Convertit un document Word (ou Pages…) en PDF, pour que le moteur de l'app (qui ne lit que des PDF) puisse le compléter.
 /// Le PDF est écrit à côté du document (« Séance 1.docx » → « Séance 1.pdf »), l'original n'est jamais modifié.
-/// Word d'abord, puis Pages ; sans l'un ni l'autre, un message clair.
+/// Pages d'abord, puis Word ; sans l'un ni l'autre, un message clair.
 enum DocumentConverter {
     enum Failure: LocalizedError {
         case noApp
@@ -24,8 +24,9 @@ enum DocumentConverter {
         // jamais d'écrasement d'un PDF plus récent que le Word : on garde son nom et on écrit « (converti) »
         let target = fm.fileExists(atPath: out.path) ? uniqueName(for: out) : out
         let apps: [(name: String, path: String, script: (URL, URL) -> String)] = [
-            ("Microsoft Word", "/Applications/Microsoft Word.app", wordScript),
+            // Pages d'abord : son export fonctionne de façon fiable ; la commande « enregistrer sous » de Word varie selon la version.
             ("Pages", "/Applications/Pages.app", pagesScript),
+            ("Microsoft Word", "/Applications/Microsoft Word.app", wordScript),
         ]
         var lastError = ""
         var tried = false
@@ -64,8 +65,11 @@ enum DocumentConverter {
     private static func wordScript(_ doc: URL, _ out: URL) -> String {
         """
         tell application "Microsoft Word"
-            set theDoc to open POSIX file "\(esc(doc))" with read only
-            save as theDoc file name "\(esc(out))" file format format PDF
+            open POSIX file "\(esc(doc))" read only true
+            set theDoc to active document
+            try
+                save as theDoc file name "\(esc(out))" file format format PDF
+            end try
             close theDoc saving no
         end tell
         """
