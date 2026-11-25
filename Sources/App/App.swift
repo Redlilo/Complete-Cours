@@ -62,6 +62,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard CoursModel.shared.confirmLeavingCurrentWork(action: "quittes l'application") else { return .terminateCancel }
         let lecture = LectureModel.shared
+        // Cours enregistré par l'enregistreur de fond : il continue sans l'app, on peut quitter sans rien perdre.
+        if lecture.sessionExterne != nil { return .terminateNow }
         guard lecture.occupe else { return .terminateNow }
         // Un cours est écouté (ou sa transcription se termine) : on ne le perd pas en quittant.
         let alert = NSAlert()
@@ -81,6 +83,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         AutoIntake.shared.resumeIfEnabled()
+        #if COMPTE_PERSO
+        EnregistreurClient.shared.demarrer()
+        EnregistreurClient.shared.verifierMiseAJour()
+        EmploiDuTempsModel.shared.demarrer()
+        #endif
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {

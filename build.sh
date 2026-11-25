@@ -226,6 +226,30 @@ while IFS= read -r -d '' fichier; do
     ditto "$fichier" "$NOUVELLE/Contents/Resources/$(basename "$fichier")"
 done < "$INTERM/ressources.liste"
 
+# Enregistreur de fond (variante personnelle seulement) : petit programme séparé, embarqué dans l'app puis copié par l'app
+# hors du paquet (l'installation de l'app ne l'interrompt donc jamais). Signature ad hoc propre : l'autorisation du micro
+# est au nom de « Enregistreur Cours », et ne change que si son code change.
+if [ "$PERSO" = 1 ]; then
+    etape "Enregistreur de fond"
+    HELPER="$INTERM/Enregistreur Cours.app"
+    rm -rf "$HELPER"; mkdir -p "$HELPER/Contents/MacOS"
+    swiftc -O -swift-version 5 -target arm64-apple-macos26.0 "$RACINE/Sources/Helper/main.swift" "$RACINE/Sources/Core/EnregistreurProtocole.swift" \
+        -o "$HELPER/Contents/MacOS/Enregistreur" >"$INTERM/enregistreur.log" 2>&1 ||
+        { cat "$INTERM/enregistreur.log" >&2; echec "la compilation de l'enregistreur de fond a échoué."; }
+    cp "$RACINE/Tools/EnregistreurInfo.plist" "$HELPER/Contents/Info.plist"
+    # Les dossiers synchronisés (Bureau, iCloud) rajoutent des attributs Finder : on les retire juste avant de signer, avec quelques essais.
+    SIGNE=0
+    for essai in 1 2 3 4 5; do
+        xattr -cr "$HELPER" 2>/dev/null || true
+        if codesign --force -s - "$HELPER" >>"$INTERM/enregistreur.log" 2>&1; then SIGNE=1; break; fi
+        sleep 1
+    done
+    [ "$SIGNE" = 1 ] || echec "la signature de l'enregistreur de fond a échoué (dossier synchronisé ? essaie COMPLETE_COURS_BUILD=\$HOME/cc-build ./build.sh ...)."
+    mkdir -p "$NOUVELLE/Contents/Resources/Enregistreur"
+    ditto "$HELPER" "$NOUVELLE/Contents/Resources/Enregistreur/Enregistreur Cours.app"
+    info "Enregistreur Cours.app compilé et embarqué."
+fi
+
 # --- Signature et vérifications ----------------------------------------------
 
 etape "Signature (ad hoc) et vérifications"
