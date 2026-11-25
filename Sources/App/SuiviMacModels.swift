@@ -58,6 +58,9 @@ struct SuiviOffre: Codable, Identifiable, Hashable {
     var vendeurPro: Bool? = nil  // annonce de professionnel (true) ou de particulier (false)
 
     var id: String { key }
+
+    /// Annonce de particulier (ou d'origine impossible à vérifier) : Leboncoin particulier, Kleinanzeigen.
+    var annonceParticulier: Bool { source.hasPrefix("Leboncoin (particulier") || source.hasPrefix("Kleinanzeigen") }
 }
 
 /// Un passage de relevé : toutes les offres vues ce jour-là.

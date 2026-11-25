@@ -27,9 +27,13 @@ enum SubjectStyle {
 
 /// Petite étiquette arrondie (« Évaluation », « Déjà rempli »…).
 extension CourseDigest {
-    /// Couleur de l'étiquette d'état : à compléter (orange), partiel (jaune), complet (vert).
+    /// Couleur de l'étiquette d'état : à compléter (orange), partiel (ambre lisible), complet (vert).
+    /// Ambre plus sombre que `.yellow` (illisible en clair) ; jaune système en mode sombre.
+    private static let amber = Color(nsColor: NSColor(name: nil) { a in
+        a.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? .systemYellow : NSColor(red: 0.62, green: 0.40, blue: 0.0, alpha: 1)
+    })
     var badgeColor: Color {
-        switch state { case .vide: return .orange; case .partiel: return .yellow; case .complet: return .green }
+        switch state { case .vide: return .orange; case .partiel: return Self.amber; case .complet: return .green }
     }
 }
 
@@ -38,7 +42,7 @@ struct Tag: View {
     let color: Color
     var body: some View {
         Text(text)
-            .font(.caption2.weight(.medium)).foregroundStyle(color)
+            .font(.caption2.weight(.semibold)).foregroundStyle(color.mix(with: .primary, by: 0.35))
             .padding(.horizontal, 6).padding(.vertical, 1)
             .background(color.opacity(0.14), in: Capsule())
     }

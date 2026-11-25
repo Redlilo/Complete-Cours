@@ -797,8 +797,59 @@ func runExtra() async {
     } catch { check(false, "export cartes", "\(error)") }
 }
 
+// MARK: - Cas hostiles (audit « Réviser »)
+
+func runHostile() async {
+    section("Hostile : signes de calcul, JSON, mémoire, export")
+    // cartes dont seuls les signes diffèrent : aucune ne doit être prise pour un doublon
+    let g = FakeGenerator { _, _ in json(["cartes": [["recto": "Calcule 3+4", "verso": "7", "page": 1], ["recto": "Calcule 3×4", "verso": "12", "page": 1], ["recto": "Calcule 3+4", "verso": "7 bis", "page": 1]]]) }
+    let svc = RevisionService(generator: g)
+    let src = RevisionSource(url: URL(fileURLWithPath: "/tmp/x.pdf"), documentName: "x", pages: [RevisionPage(index: 0, text: "Du texte de cours assez long.", imageJPEG: nil)])
+    if let cards = try? await svc.makeCards(src, count: 5, progress: { _, _ in }) {
+        check(cards.count == 2 && cards.map { $0.id } == [1, 2], "3+4 et 3×4 gardés, vrai doublon retiré", "\(cards.count)")
+    } else { check(false, "makeCards hostile") }
+    let q = RevisionService.parseQuestion(["style": "qcm", "question": "Combien ?", "choix": ["3+4", "3×4", "3−4"], "reponse": "3×4", "explication": "", "page": 99], pageCount: 2, shuffle: false)
+    check(q != nil && q!.choices.count == 3 && q!.expected == "3×4" && q!.page == nil, "QCM aux choix à signes différents, page hors limites ignorée")
+    check(RevisionService.verdict("incomplet") == .partiel && RevisionService.verdict("incorrect") == .faux, "verdict « incomplet » = partiel")
+    let long = RevisionService.parseCard(["recto": String(repeating: "mot ", count: 200), "verso": "ok"], pageCount: 1)
+    check(long != nil && long!.front.hasSuffix("…") && long!.front.count <= 301, "recto trop long coupé proprement")
+    for raw in ["", "   ", "```json\n```", "{", "[1,2", "null", "\"texte\"", "```json\n{\"cartes\": []}\n```", "Voici : {\"a\":1} fin"] {
+        _ = try? RevJSON.parse(raw)
+    }
+    check(true, "JSON illisible : aucun plantage")
+    // mémoire : ancien fichier sans certains champs, cartes vides
+    let dir = workDir.appendingPathComponent("memoire-hostile")
+    try? FileManager.default.removeItem(at: dir)
+    let store = RevisionMemoireStore(dossier: dir)
+    let pdf = workDir.appendingPathComponent("memoire-hostile.pdf")
+    try? Data("%PDF".utf8).write(to: pdf)
+    store.sauver(RevisionMemoire(summary: nil, questions: [], cards: [RevisionCard(id: 7, front: "A", back: "B", page: nil), RevisionCard(id: 7, front: " ", back: "x", page: nil), RevisionCard(id: 7, front: "C", back: "D", page: nil)], corrige: []), pour: pdf)
+    let back = store.charger(pdf)
+    check(back?.cards.map { $0.id } == [1, 2] && back?.cards.map { $0.front } == ["A", "C"], "mémoire : cartes vides retirées, ids renumérotés", "\(String(describing: back?.cards))")
+    let legacy = Data("{\"cards\":[{\"id\":1,\"front\":\"A\",\"back\":\"B\"}],\"tailleDuPDF\":4}".utf8)
+    if let m = try? JSONDecoder().decode(RevisionMemoire.self, from: legacy) { check(m.cards.count == 1 && m.questions.isEmpty, "mémoire ancienne (champs manquants) lisible") } else { check(false, "mémoire ancienne illisible") }
+    // export : très longs textes, couleurs
+    let huge = String(repeating: "Phrase très longue sans fin. ", count: 400)
+    do {
+        let s = RevisionSummary(title: String(repeating: "T", count: 300), keyPoints: [huge, "court"], vocabulary: [RevisionTerm(term: "", definition: huge)], formulas: [huge + " (légende)"], tips: [huge])
+        let d = try RevisionExport.summaryPDF(s, documentName: "Long")
+        let (doc, pages) = pdfText(d)
+        check(doc.pageCount >= 3 && pages.joined().contains("court"), "fiche aux textes énormes : PDF valide, rien de perdu", "\(doc.pageCount)")
+        let flat = pages.joined(separator: " ").split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
+        let found = flat.components(separatedBy: "Phrase très longue sans fin.").count - 1
+        check(found >= 800, "points et conseils géants : texte entier présent (2 x 400 ; formule et vocabulaire rognés à une page)", "\(found)")
+        let c = [RevisionCard(id: 1, front: huge, back: huge, page: 99)]
+        let dc = try RevisionExport.cardsPDF(c, documentName: "Long")
+        check(PDFDocument(data: dc)?.pageCount == 2, "carte énorme : 2 pages")
+        let it = CorrigeItem(id: 1, page: 1, number: "", instruction: huge, studentAnswer: "", teacherRemark: "", correctAnswer: "42", explanation: "", toRemember: "", status: nil)
+        check(PDFDocument(data: try RevisionExport.corrigePDF([it], documentName: "x")) != nil, "corrigé aux champs vides")
+        let qs = [RevisionQuestion(id: 1, style: .qcm, question: huge, choices: ["a", "b", "c"], expected: "zzz", explanation: "", page: nil)]
+        check(PDFDocument(data: try RevisionExport.quizPDF(qs, documentName: "x", withAnswers: true)) != nil, "QCM dont la réponse n'est pas parmi les choix")
+    } catch { check(false, "export hostile", "\(error)") }
+}
+
 let done = DispatchSemaphore(value: 0)
-Task { await runAll(); await runExtra(); done.signal() }
+Task { await runAll(); await runExtra(); await runHostile(); done.signal() }
 done.wait()
 print("\n\(checks - failures)/\(checks) vérifications réussies")
 exit(failures == 0 ? 0 : 1)

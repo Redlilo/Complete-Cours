@@ -72,6 +72,13 @@ enum Prompts {
         }
     }
 
+    /// L'identité de l'élève ne part que si la page parle de nom, prénom ou classe (texte de la page ou contexte d'une zone).
+    static func mentionsIdentity(_ r: PageRequest) -> Bool {
+        let text = ([r.transcript] + r.zones.flatMap { [$0.contextBefore, $0.contextAfter] }).joined(separator: " ")
+            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
+        return text.range(of: "nom|prenom|classe", options: .regularExpression) != nil
+    }
+
     /// Texte du message utilisateur pour une page (l'image, si elle existe, est envoyée avant ce texte).
     static func completionUserText(_ r: PageRequest) -> String {
         var s = "Document : « \(r.documentName) » — page \(r.pageNumber) sur \(r.pageCount)\n"
@@ -80,7 +87,7 @@ enum Prompts {
         } else {
             s += "Mode : Cours. Complète les zones en t’appuyant sur le contenu et le contexte du cours.\n"
         }
-        if !r.student.isEmpty {
+        if !r.student.isEmpty, mentionsIdentity(r) {
             s += "Profil de l'élève (à utiliser seulement pour les champs d'identité) : nom = \(r.student.nom), prénom = \(r.student.prenom), classe = \(r.student.classe)\n"
         }
         s += "Date du jour : \(r.todayText)\n\n"

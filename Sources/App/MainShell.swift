@@ -23,6 +23,7 @@ struct MainShell: View {
                 #if COMPTE_PERSO
                 Section("Perso") {
                     row(.suiviMac)
+                    row(.atlas)
                 }
                 #endif
             }
@@ -38,6 +39,7 @@ struct MainShell: View {
                 case .ecouter: LectureView()
                 #if COMPTE_PERSO
                 case .suiviMac: SuiviMacView()
+                case .atlas: AtlasView()
                 #endif
                 }
             }
@@ -58,6 +60,7 @@ struct MainShell: View {
         case .ecouter: return .red
         #if COMPTE_PERSO
         case .suiviMac: return .teal
+        case .atlas: return .indigo
         #endif
         }
     }
@@ -100,6 +103,7 @@ struct MainShell: View {
         return Button { openSettings() } label: {
             HStack(spacing: 8) {
                 Circle().fill(ok ? Color.green : Color.orange).frame(width: 9, height: 9)
+                    .accessibilityLabel(ok ? "Moteur prêt" : "Moteur à régler")
                 VStack(alignment: .leading, spacing: 1) {
                     Text(name).font(.callout.weight(.medium)).lineLimit(1)
                     Text(ok ? "Prêt à écrire les réponses" : (problem?.title ?? "À régler"))

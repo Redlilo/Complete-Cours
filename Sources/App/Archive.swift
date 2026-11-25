@@ -25,7 +25,7 @@ struct ArchiveSheet: View {
                         VStack(alignment: .leading, spacing: 3) {
                             Text(p.original.lastPathComponent).font(.body.weight(.medium))
                             Text("reste en place : \(p.completed.lastPathComponent)").font(.caption).foregroundStyle(.secondary)
-                            Text("→ \(OriginalsArchive.folderName) › \(relative(p.destination))").font(.caption).foregroundStyle(.tertiary)
+                            Text("→ \(OriginalsArchive.folderName) › \(relative(p.destination))").font(.caption).foregroundStyle(.secondary)
                         }
                     }
                 }

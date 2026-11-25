@@ -66,6 +66,26 @@ enum AnswerRenderer {
 
         for zone in zones {
             guard zone.enabled, zone.kind != .ignorer else { continue }
+
+            // zone schéma : une annotation dessinée en vectoriel dans le cadre (jamais de texte)
+            if zone.kind == .schema {
+                guard let schema = zone.schema else { continue }
+                guard let page = document.page(at: zone.page) else { result.skippedIDs.insert(zone.id); continue }
+                let frame = PageGeometry(page: page)
+                guard let box = zone.box, box.width > 8, box.height > 8 else {
+                    result.skippedIDs.insert(zone.id)       // sans cadre
+                    continue
+                }
+                let annotation = SchemaAnnotation(schema: schema, bounds: frame.pageRect(fromZone: box), couleur: ink.color,
+                                                  rotationPage: frame.rotation)
+                _ = annotation.setValue("\(annotationAuthor)-schema-\(zone.id)", forAnnotationKey: .name)
+                annotation.userName = annotationAuthor
+                page.addAnnotation(annotation)
+                result.annotations[zone.id] = [annotation]
+                result.touchedPages.insert(zone.page)
+                continue
+            }
+
             let tokens = InkText.tokens(zone.answer)
             guard !tokens.isEmpty else { continue }
             guard let page = document.page(at: zone.page) else {
@@ -141,6 +161,7 @@ enum AnswerRenderer {
 
     /// Écrit le PDF final dans `url` en repartant du fichier d'origine, réponses incluses.
     /// Si `flatten` est vrai, le texte est intégré aux pages (non modifiable) ; sinon il reste en annotations.
+    /// Exception : dès qu'un schéma est dessiné, l'export est toujours aplati (sinon le schéma serait invisible hors de l'app).
     /// Le fichier d'origine n'est jamais modifié.
     static func export(sourceURL: URL, zones: [Zone], style: WritingStyle, flatten: Bool, to url: URL) throws {
         if InkFiles.isSameFile(sourceURL, url) {
@@ -153,11 +174,15 @@ enum AnswerRenderer {
             throw CoursError.message("Le PDF « \(sourceURL.lastPathComponent) » est protégé par un mot de passe : impossible d'y écrire les réponses.")
         }
         let pageCount = doc.pageCount
-        _ = apply(zones: zones, to: doc, style: style)
+        let applied = apply(zones: zones, to: doc, style: style)
+        // PDFKit n'écrit pas d'aspect visible pour une annotation de schéma : dans un PDF non aplati, elle serait invisible
+        // dans Aperçu ou un autre lecteur. Quand il y a un schéma, on aplatit donc toujours (le texte aussi, alors).
+        let flatten = flatten || applied.annotations.values.contains { $0.contains { $0 is SchemaAnnotation } }
 
-        var options: [PDFDocumentWriteOption: Any] = [:]
-        if flatten { options[PDFDocumentWriteOption.burnInAnnotationsOption] = true }
-        guard let data = doc.dataRepresentation(options: options), !data.isEmpty else {
+        // Aplatir : les schémas (annotations personnalisées) sont dessinés par `SchemaAnnotation.aplatir`, car le burn-in natif
+        // de PDFKit n'appelle pas leur dessin. Sans schéma, `aplatir` renvoie exactement le burn-in natif.
+        let data: Data? = flatten ? SchemaAnnotation.aplatir(doc) : doc.dataRepresentation()
+        guard let data, !data.isEmpty else {
             throw CoursError.message("Le PDF complété n'a pas pu être produit. Recommence l'enregistrement ; si le problème continue, essaie sans « aplatir le texte ».")
         }
         // on vérifie ce qu'on va écrire : le PDF doit se rouvrir avec le même nombre de pages

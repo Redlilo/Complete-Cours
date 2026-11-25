@@ -219,7 +219,9 @@ fi
 cp "$INTERM/AppIcon.icns" "$NOUVELLE/Contents/Resources/AppIcon.icns"
 printf 'APPL????' > "$NOUVELLE/Contents/PkgInfo"
 # Tout autre fichier ou dossier placé dans Resources/ (hors Info.plist et fichiers cachés) est ajouté tel quel au paquet.
-find "$RACINE/Resources" -mindepth 1 -maxdepth 1 ! -name 'Info.plist' ! -name '.*' -print0 > "$INTERM/ressources.liste"
+# Resources/Perso/ (Atlas des skills) n'est copié que par la variante personnelle : jamais dans la version distribuable.
+EXCLUS_PERSO=(); [ "$PERSO" = 1 ] || EXCLUS_PERSO=(! -name 'Perso')
+find "$RACINE/Resources" -mindepth 1 -maxdepth 1 ! -name 'Info.plist' ! -name '.*' ${EXCLUS_PERSO[@]+"${EXCLUS_PERSO[@]}"} -print0 > "$INTERM/ressources.liste"
 while IFS= read -r -d '' fichier; do
     ditto "$fichier" "$NOUVELLE/Contents/Resources/$(basename "$fichier")"
 done < "$INTERM/ressources.liste"
@@ -231,6 +233,8 @@ plutil -lint "$NOUVELLE/Contents/Info.plist" >/dev/null || echec "l'Info.plist d
 [ -x "$NOUVELLE/Contents/MacOS/$EXE_DECLARE" ] || echec "L'exécutable est absent ou non exécutable."
 # codesign refuse les attributs étendus (dossiers synchronisés avec iCloud, Bureau…) : on les retire d'abord.
 xattr -cr "$NOUVELLE" 2>/dev/null || true
+# Note sécurité : la signature reste ad hoc. Pour une distribution large, passer à une identité Developer ID avec
+# « --options runtime » (Hardened Runtime) puis notariser (notarytool) ; non fait ici volontairement.
 codesign --force --deep -s - "$NOUVELLE" >"$INTERM/signature.log" 2>&1 ||
     { cat "$INTERM/signature.log" >&2; echec "la signature de l'app a échoué."; }
 codesign --verify --deep --strict "$NOUVELLE" 2>&1 || echec "la signature de l'app est invalide."
@@ -239,7 +243,13 @@ info "Info.plist valide, exécutable présent, signature ad hoc vérifiée."
 # L'ancienne version n'est remplacée qu'une fois la nouvelle entièrement prête.
 rm -rf "$APP"
 mv "$NOUVELLE" "$APP"
-codesign --verify --deep --strict "$APP" 2>&1 || echec "la signature de l'app est devenue invalide après son déplacement dans $SORTIE."
+# Les dossiers synchronisés (Bureau, iCloud) rajoutent des attributs Finder après le déplacement : on les retire de nouveau.
+xattr -cr "$APP" 2>/dev/null || true
+codesign --verify --deep --strict "$APP" 2>&1 || {
+    sleep 2; xattr -cr "$APP" 2>/dev/null || true
+    codesign --verify --deep --strict "$APP" 2>&1 ||
+        avertir "la copie dans $SORTIE reçoit des attributs Finder (dossier synchronisé) : sans importance, l'app est vérifiée avant le déplacement et l'installation la copie proprement. Pour éviter ce message : COMPLETE_COURS_BUILD=\$HOME/cc-build ./build.sh ..."
+}
 VERSION_APP="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")"
 etape "Terminé en $((SECONDS - DEBUT)) s : $NOM_AFFICHE $VERSION_APP"
 info "$APP"
@@ -304,7 +314,8 @@ if [ "$INSTALLER" = 1 ]; then
     fi
     mkdir -p "$DOSSIER_INSTALL"
     rm -rf "$BROUILLON" "$ANCIENNE"
-    ditto "$APP" "$BROUILLON"
+    ditto --norsrc --noextattr "$APP" "$BROUILLON"
+    xattr -cr "$BROUILLON" 2>/dev/null || true
     codesign --verify --deep --strict "$BROUILLON" || { rm -rf "$BROUILLON"; echec "la copie de l'app est invalide."; }
     # On met l'ancienne version de côté, on installe la nouvelle, puis seulement on supprime l'ancienne.
     if [ -e "$DESTINATION" ]; then mv "$DESTINATION" "$ANCIENNE"; fi

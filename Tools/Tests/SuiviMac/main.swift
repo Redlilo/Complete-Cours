@@ -1,7 +1,8 @@
 import Foundation
 
-// Test des lecteurs « Suivi MacBook » sur des pages ENREGISTRÉES (aucun accès réseau).
+// Test du Suivi MacBook IA : lecteurs sur des pages ENREGISTRÉES (aucun accès réseau), calculs sur des offres fabriquées à la main.
 // Usage : suivimac <dossier des pages enregistrées>
+// Une page absente n'est PAS une erreur : son test est « sauté » (les pages de référence sont dans Tools/Tests/SuiviMac/pages).
 let dossier = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : "."
 func lire(_ nom: String) -> String { (try? String(contentsOfFile: "\(dossier)/\(nom).html", encoding: .utf8)) ?? "" }
 var echecs = 0
@@ -13,6 +14,44 @@ func afficher(_ nom: String, _ o: [SuiviOffre]) {
     }
 }
 
+func existe(_ nom: String) -> Bool { FileManager.default.fileExists(atPath: "\(dossier)/\(nom).html") }
+var sautes = 0
+func sauter(_ nom: String) { sautes += 1; print("sauté  : \(nom) (page enregistrée absente)") }
+func fab(_ k: String, _ prix: Double, puce: String = "M4 Max", ecran: Int = 16, gpu: Int? = 40, ram: Int = 48, source: String = "Test", etat: SuiviEtat = .neuf) -> SuiviOffre {
+    SuiviOffre(key: k, source: source, pays: "FR", etat: etat, titre: "t", puce: puce, ecran: ecran, gpu: gpu, ram: ram, ssd: "1 To", affichage: "standard", couleur: "", clavier: "AZERTY", prix: prix, prixOriginal: nil, stock: "", url: "", livraison: .oui, remarque: "", manuelle: false, ajoutee: nil)
+}
+
+// MARK: Kleinanzeigen.de (page enregistrée : 27 annonces réelles + 3 cas fabriqués)
+if existe("kleinanzeigen_m4") {
+    let ka = SuiviLecteurs.kleinanzeigen(lire("kleinanzeigen_m4")); afficher("Kleinanzeigen.de", ka)
+    verifier(ka.count >= 3, "Kleinanzeigen : au moins 3 offres Max 36/48/64 Go")
+    verifier(ka.allSatisfy { $0.source == "Kleinanzeigen.de" && $0.pays == "DE" && $0.etat == .occasion && $0.clavier == "QWERTZ" }, "Kleinanzeigen : source, Allemagne, occasion, QWERTZ")
+    verifier(ka.allSatisfy { $0.puce.hasSuffix("Max") && [36, 48, 64].contains($0.ram) && SuiviCalcul.prixValide($0.prix) }, "Kleinanzeigen : seulement des Max 36/48/64 Go à un prix valide (pas les « M4 Pro »)")
+    verifier(ka.contains { $0.puce == "M4 Max" && $0.ram == 64 && $0.prix == 3790 && $0.prixOriginal == 3900 }, "Kleinanzeigen : M4 Max 64 Go à 3 790 € (ancien prix 3 900 €)")
+    verifier(ka.contains { $0.puce == "M4 Max" && $0.ram == 36 && $0.prix == 3200 && $0.ecran == 16 }, "Kleinanzeigen : M4 Max 36 Go 16\" à 3 200 € (« 16,2 Zoll » lu)")
+    verifier(!ka.contains { $0.key == "kleinanzeigen|1" }, "Kleinanzeigen : l'annonce « defekt » est écartée")
+    verifier(!ka.contains { $0.key == "kleinanzeigen|3" }, "Kleinanzeigen : un prix de 0 € est écarté")
+    verifier(!ka.contains { $0.titre.lowercased().hasPrefix("suche") || $0.titre.lowercased().contains("tausch") }, "Kleinanzeigen : ni recherches (« Suche ») ni échanges (« Tausche »)")
+    if let o = ka.first(where: { $0.key == "kleinanzeigen|2" }) {
+        verifier(o.puce == "M3 Max" && o.ecran == 14 && o.ram == 36 && o.prix == 2450 && o.prixOriginal == 2700 && o.ville == "10115 Berlin" && o.livraison == .non,
+                 "Kleinanzeigen : annonce fabriquée M3 Max 14\" 36 Go à 2 450 €, Berlin, retrait sur place seulement (livraison .non)")
+    } else { verifier(false, "Kleinanzeigen : annonce fabriquée n° 2 lue") }
+    verifier(ka.filter { $0.livraison == .aVerifier }.allSatisfy { $0.remarque.contains("Envoi possible") }, "Kleinanzeigen : « Versand möglich » → livraison à vérifier")
+    verifier(Set(ka.map(\.key)).count == ka.count, "Kleinanzeigen : clés uniques")
+    verifier(ka.allSatisfy { $0.annonceParticulier }, "Kleinanzeigen : traité comme annonce de particulier (exclu de l'échelle par défaut)")
+    verifier(SuiviLecteurs.kleinanzeigen("<html><body>Bitte bestätigen Sie, dass Sie kein Roboter sind</body></html>").isEmpty, "Kleinanzeigen : page de vérification (pas d'annonces) → rien lu, rien contourné")
+} else { sauter("Kleinanzeigen") }
+
+// MARK: Boulanger (page enregistrée : 12 produits dont une offre de partenaire reconditionnée avec « ?offer= » dans le lien)
+if existe("boulanger") {
+    let bo = SuiviLecteurs.boulanger(lire("boulanger")); afficher("Boulanger", bo)
+    verifier(bo.count == 12, "Boulanger : les 12 produits sont lus (dont l'offre reconditionnée au lien « ?offer= »)")
+    verifier(bo.contains { $0.etat == .reconditionneTiers && $0.prix == 5868.99 && $0.ram == 48 }, "Boulanger : reconditionné M5 Max 48 Go à 5 868,99 €")
+    verifier(bo.allSatisfy { $0.clavier == "AZERTY" && $0.livraison == .oui && $0.url.hasPrefix("https://www.boulanger.com/ref/") && !$0.url.contains("?") }, "Boulanger : AZERTY, livré, lien produit sans paramètre")
+} else { sauter("Boulanger") }
+
+// MARK: Anciennes pages de référence (perdues : tests sautés tant qu'elles ne sont pas ré-enregistrées)
+if existe("apple_fr") {
 let apFR = SuiviLecteurs.apple(lire("apple_fr"), pays: "FR", base: "https://www.apple.com")
 afficher("Apple FR", apFR)
 verifier(apFR.count >= 10, "Apple FR : au moins 10 offres Max 36 et 48 Go")
@@ -30,8 +69,7 @@ let ld = SuiviLecteurs.ldlc(lire("ldlc")); afficher("LDLC", ld)
 verifier(ld.count >= 3 && ld.allSatisfy { $0.puce == "M5 Max" && $0.ecran == 16 }, "LDLC : M5 Max 16\" 48 Go")
 let mt = SuiviLecteurs.materiel(lire("materiel")); afficher("Materiel.net", mt)
 verifier(mt.count >= 2, "Materiel.net : au moins 2 offres")
-let bl = SuiviLecteurs.boulanger(lire("boulanger")); afficher("Boulanger", bl)
-verifier(bl.count >= 1 && bl.allSatisfy { $0.clavier == "AZERTY" }, "Boulanger : offres 48 Go, AZERTY")
+let bl = SuiviLecteurs.boulanger(lire("boulanger"))
 let al = SuiviLecteurs.alternate(lire("alternate"), rechercheURL: "https://www.alternate.de"); afficher("Alternate.de", al)
 verifier(al.count >= 1 && al.allSatisfy { $0.clavier == "QWERTZ" && $0.livraison == .aVerifier }, "Alternate : QWERTZ, livraison à vérifier")
 let ms = SuiviLecteurs.macStore24(lire("macstore24")); afficher("mac-store24", ms)
@@ -108,5 +146,44 @@ for n in SuiviCalcul.paliers.indices {
         print("   tranche \(Int(b.minimum))–\(Int(b.maximum)) € · \(ram) Go : \(x.map { "\(SuiviCalcul.nomCourt($0.offre)) — \($0.offre.source) — \(Int($0.offre.prix)) € — \($0.bande ?? 0) Go/s" } ?? "aucune")")
     }
 }
-print(echecs == 0 ? "\nTOUT EST OK" : "\n\(echecs) échec(s)")
+} else { sauter("anciens lecteurs (Apple, LDLC, Materiel.net, Alternate, mac-store24, Fnac, Darty, MediaMarkt, RefurbMe, Amazon, Rue du Commerce, Okamac, Leboncoin)") }
+
+// MARK: Calculs sur des offres fabriquées (ne dépendent d'aucune page)
+do {
+    let m4 = fab("m4", 4259, puce: "M4 Max", ram: 48)
+    let e = SuiviCalcul.evaluer(m4)
+    verifier(e.bande == 546 && abs((e.score ?? 0) - 4259.0 / 546.0) < 0.001, "score M4 Max 16\" 48 Go : 4 259 € ÷ 546 Go/s")
+    var sansGPU = m4; sansGPU.gpu = nil
+    verifier(SuiviCalcul.evaluer(sansGPU).score == nil, "GPU inconnu : pas de score")
+    let toutes = [fab("a", 3300, puce: "M4 Max", gpu: 32, ram: 36), fab("b", 3450, puce: "M3 Max", gpu: 40, ram: 36), fab("c", 3900, puce: "M4 Max", gpu: 40, ram: 36),
+                  fab("d", 4400, puce: "M5 Max", gpu: 32, ram: 36), fab("e", 4259, puce: "M4 Max", gpu: 40, ram: 48), fab("f", 5100, puce: "M5 Max", gpu: 40, ram: 48)].map { SuiviCalcul.evaluer($0) }
+    let b4 = SuiviCalcul.bornes(3, parTranche: true)
+    verifier(b4.minimum == 3500 && b4.maximum == 4000, "tranche 4 000 € : de 3 500 à 4 000 €")
+    verifier(SuiviCalcul.bornes(3, parTranche: false).minimum == 0, "« jusqu'au palier » : à partir de 0")
+    let dansTranche = SuiviCalcul.meilleurSousBudget(toutes, budget: 4000, ram: 36, minimum: 3500)
+    verifier(dansTranche?.offre.key == "c", "tranche 3 500–4 000 € en 36 Go : l'offre c (546 Go/s à 3 900 €)")
+    let t3 = SuiviCalcul.meilleurSousBudget(toutes, budget: 3500, ram: 36, minimum: 3000)
+    verifier(t3?.offre.key == "a" && (t3?.bande ?? 0) >= 410, "tranche 3 000–3 500 € en 36 Go : l'offre a (410 Go/s, plus rapide que b à 400 Go/s)")
+    let r = SuiviCalcul.meilleurRapportSousBudget(toutes, budget: 4500, ram: 36, minimum: 3500)
+    let p = SuiviCalcul.meilleurSousBudget(toutes, budget: 4500, ram: 36, minimum: 3500)
+    verifier(r != nil && p != nil && (r!.score ?? 1e9) <= (p!.score ?? 1e9) && (p!.bande ?? 0) >= (r!.bande ?? 0), "tranche 3 500–4 500 € en 36 Go : performances ≥ et rapport ≤ de l'autre")
+    verifier(SuiviCalcul.meilleurSousBudget(toutes, budget: 4300, ram: 48)?.offre.key == "e", "jusqu'à 4 300 € en 48 Go : l'offre e")
+    verifier(SuiviCalcul.meilleurSousBudget(toutes, budget: 3000, ram: 48) == nil, "aucune offre dans la tranche : nil")
+}
+
+// attaque : prix absurdes (0, négatif, NaN, énorme) : jamais de plantage ni de « meilleure offre » à 0 €
+do {
+    func off(_ k: String, _ p: Double) -> SuiviOffre {
+        SuiviOffre(key: k, source: "A", pays: "FR", etat: .neuf, titre: "t", puce: "M4 Max", ecran: 16, gpu: 40, ram: 48, ssd: "1 To", affichage: "standard", couleur: "", clavier: "AZERTY", prix: p, prixOriginal: nil, stock: "", url: "", livraison: .oui, remarque: "", manuelle: false, ajoutee: nil)
+    }
+    let absurdes: [Double] = [0, -5, -1e300, .nan, .infinity, 1e300]
+    let evals = (absurdes + [4000]).enumerated().map { SuiviCalcul.evaluer(off("k\($0.offset)", $0.element)) }
+    let gardees = SuiviCalcul.filtrer(evals, SuiviFiltres())
+    verifier(gardees.count == 1 && gardees[0].offre.prix == 4000, "prix absurdes écartés du classement")
+    verifier(SuiviCalcul.regrouper(absurdes.enumerated().map { off("k\($0.offset)", $0.element) }).isEmpty, "prix absurdes écartés du regroupement")
+    _ = SuiviModeles.csv(evals)
+    verifier(true, "export CSV avec des prix absurdes : pas de plantage")
+    verifier(SuiviCalcul.prixValide(3000) && !SuiviCalcul.prixValide(0) && !SuiviCalcul.prixValide(-1) && !SuiviCalcul.prixValide(.nan) && !SuiviCalcul.prixValide(.infinity), "prix valide : 3 000 € oui ; 0, négatif, NaN, infini non")
+}
+print(echecs == 0 ? "\nTOUT EST OK (\(sautes) test(s) sauté(s))" : "\n\(echecs) échec(s)")
 exit(echecs == 0 ? 0 : 1)

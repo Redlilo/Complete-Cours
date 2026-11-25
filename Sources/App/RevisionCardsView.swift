@@ -78,6 +78,7 @@ struct CardFace: View {
             Spacer(minLength: 0)
             Text(text)
                 .font(.system(size: back ? 20 : 24, weight: back ? .regular : .semibold, design: .rounded))
+                .foregroundStyle(back ? Color.blue : Color.primary)    // question en noir, réponse en bleu
                 .multilineTextAlignment(.center)
                 .minimumScaleFactor(0.6)
                 .textSelection(.enabled)
@@ -199,7 +200,7 @@ struct CardsEnd: View {
                     ForEach(model.cardsToReview) { c in
                         VStack(alignment: .leading, spacing: 2) {
                             Text(c.front).fontWeight(.semibold)
-                            Text(c.back).font(.callout).foregroundStyle(.secondary)
+                            Text(c.back).font(.callout).foregroundStyle(.blue)
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .textSelection(.enabled)

@@ -12,6 +12,6 @@ APP="$ROOT/Sources/App"
 SW=(swiftc -O -swift-version 5 -target arm64-apple-macos26.0)
 "${SW[@]}" "$ROOT"/Sources/Core/*.swift "$HERE/core/main.swift" -o "$OUT/ledger-core-tests"
 "$OUT/ledger-core-tests"
-MODELE=("$APP/Format.swift" "$APP/Keychain.swift" "$APP/Preferences.swift" "$APP/Dialogs.swift" "$APP/RecentFiles.swift" "$APP/CoursModel.swift" "$APP/Batch.swift")
+MODELE=("$APP/AppIdentity.swift" "$APP/Format.swift" "$APP/Keychain.swift" "$APP/Preferences.swift" "$APP/Dialogs.swift" "$APP/RecentFiles.swift" "$APP/CoursModel.swift" "$APP/Batch.swift")
 "${SW[@]}" "$ROOT"/Sources/Core/*.swift "${MODELE[@]}" "$HERE/batch/main.swift" -o "$OUT/ledger-batch-tests"
 "$OUT/ledger-batch-tests"

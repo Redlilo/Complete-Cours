@@ -109,26 +109,19 @@ struct LectureBase: Codable {
 enum LectureTexte {
     /// Premier objet JSON `{ … }` d'une réponse (l'IA ajoute parfois du texte autour).
     static func objetJSON(_ s: String) -> [String: Any]? {
-        guard let a = s.firstIndex(of: "{"), let b = s.lastIndex(of: "}"), a < b else { return nil }
-        guard let d = String(s[a...b]).data(using: .utf8) else { return nil }
-        return (try? JSONSerialization.jsonObject(with: d)) as? [String: Any]
-    }
-
-    /// Remplace les prénoms de la classe par « un élève » (mot entier, sans tenir compte des majuscules).
-    static func retirerPrenoms(_ texte: String, prenoms: [String]) -> String {
-        var t = texte
-        for n in Set(prenoms.map { $0.trimmingCharacters(in: .whitespaces) }).filter({ !$0.isEmpty }).sorted(by: { $0.count > $1.count }) {
-            let motif = "(?<![\\p{L}\\p{N}])" + NSRegularExpression.escapedPattern(for: n) + "(?![\\p{L}\\p{N}])"
-            if let re = try? NSRegularExpression(pattern: motif, options: [.caseInsensitive]) {
-                t = re.stringByReplacingMatches(in: t, range: NSRange(t.startIndex..., in: t), withTemplate: "un élève")
-            }
+        guard let b = s.lastIndex(of: "}") else { return nil }
+        // du premier « { » qui donne un objet valide (du texte ou des accolades peuvent précéder le JSON)
+        var depart = s.startIndex, essais = 0
+        while essais < 20, let a = s[depart...].firstIndex(of: "{"), a < b {
+            if let d = String(s[a...b]).data(using: .utf8), let o = (try? JSONSerialization.jsonObject(with: d)) as? [String: Any] { return o }
+            depart = s.index(after: a); essais += 1
         }
-        return t
+        return nil
     }
 
     /// Corrige les erreurs de transcription : liste « faux=juste », puis mots très proches du lexique.
     static func corriger(_ texte: String, reglages: LectureReglages) -> String {
-        var t = texte
+        var t = LectureVocabulaire.corrigerDeBase(texte)     // fautes classiques du vocabulaire de cours (télé rupteur, kilo watt…)
         for ligne in reglages.corrections {
             let parts = ligne.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false).map(String.init)
             guard parts.count == 2, !parts[0].trimmingCharacters(in: .whitespaces).isEmpty else { continue }
@@ -140,27 +133,38 @@ enum LectureTexte {
             }
         }
         let mots = reglages.lexique.filter { !$0.contains(" ") && $0.count >= 5 }
-        guard !mots.isEmpty, let re = try? NSRegularExpression(pattern: "\\w+") else { return t }
+        guard let re = try? NSRegularExpression(pattern: "\\w+") else { return t }
         var sortie = ""
         var fin = t.startIndex
         for m in re.matches(in: t, range: NSRange(t.startIndex..., in: t)) {
             guard let r = Range(m.range, in: t) else { continue }
             sortie += t[fin..<r.lowerBound]
             let mot = String(t[r])
-            sortie += meilleur(mot, parmi: mots) ?? mot
+            sortie += meilleur(mot, parmi: mots, base: LectureVocabulaire.motsSeuls) ?? mot
             fin = r.upperBound
         }
         return sortie + t[fin...]
     }
 
-    private static func meilleur(_ mot: String, parmi mots: [String]) -> String? {
+    /// Le mot du lexique (ou du vocabulaire de base) que le moteur a sans doute mal écrit ; nil si le mot est juste ou n'ressemble à rien.
+    /// Un mot déjà connu (lexique ou vocabulaire) n'est jamais changé : « conducteur » ne devient pas « contacteur ».
+    private static func meilleur(_ mot: String, parmi mots: [String], base: [String]) -> String? {
         guard mot.count >= 5 else { return nil }
         let bas = mot.lowercased()
-        if mots.contains(where: { $0.lowercased() == bas }) { return nil }
+        if mots.contains(where: { $0.lowercased() == bas }) || base.contains(where: { $0.lowercased() == bas }) { return nil }
+        let nu = bas.folding(options: .diacriticInsensitive, locale: nil)
+        // même mot, accents oubliés ou faux (« resistance », « ampere »)
+        if let c = (mots + base.filter { $0.count >= 6 }).first(where: { $0.lowercased().folding(options: .diacriticInsensitive, locale: nil) == nu }) { return c }
         var best: (String, Double)?
         for c in mots {
             let s = ressemblance(bas, c.lowercased())
             if s >= 0.8, s > (best?.1 ?? 0) { best = (c, s) }
+        }
+        if best == nil, mot.count >= 8 {            // vocabulaire de base : plus prudent (mot long, très proche)
+            for c in base where abs(c.count - mot.count) <= 1 && c.count >= 8 {
+                let s = ressemblance(bas, c.lowercased())
+                if s >= 0.88, s > (best?.1 ?? 0) { best = (c, s) }
+            }
         }
         return best?.0
     }
@@ -326,7 +330,7 @@ enum LecturePrompts {
 
     static func fiche(_ garde: String, matiere: String, prof: String, jour: String) -> String {
         """
-        Voici le contenu nettoyé d'un cours de \(matiere.isEmpty ? "lycée" : matiere) (\(prof.isEmpty ? "prof" : prof)) du \(jour), niveau Seconde bac pro.
+        Voici le contenu nettoyé d'un cours de \(matiere.isEmpty ? "lycée" : matiere) du \(jour), niveau Seconde bac pro.
         Écris une fiche de révision claire, en français simple. N'invente aucune information absente du texte : pas de définition, \
         d'unité ni de formule que le prof n'a pas dites.
         « resume » : du Markdown avec des titres ## et des listes. « devoirs » : ce que le prof demande ; « pour » = les mots exacts du prof \
@@ -400,7 +404,7 @@ enum LecturePipeline {
     /// Tri par numéros (3 appels à la fois au plus), fiche, puis vérification de la fiche. Lève l'erreur du moteur telle quelle.
     static func traiter(_ cours: LectureCours, reglages: LectureReglages, generator: StructuredGenerator) async throws
         -> (fiche: LectureFiche, retire: [String]) {
-        let gardees = cours.phrases.filter(\.garder).map { (texte: retirerPrenomsEtCorriger($0.texte, reglages), qui: $0.qui) }
+        let gardees = cours.phrases.filter(\.garder).map { (texte: retirerPrenomsEtCorriger($0.texte, reglages, prof: cours.prof), qui: $0.qui) }
             .filter { !$0.texte.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
         guard !gardees.isEmpty else { throw LectureErreur.vide }
         let textes = gardees.map(\.texte)
@@ -475,8 +479,9 @@ enum LecturePipeline {
         }
     }
 
-    static func retirerPrenomsEtCorriger(_ texte: String, _ r: LectureReglages) -> String {
-        LectureTexte.retirerPrenoms(LectureTexte.corriger(texte, reglages: r), prenoms: r.prenoms)
+    /// Texte prêt à partir chez l'IA : corrigé, sans prénom d'élève ni nom du prof (« le prof »).
+    static func retirerPrenomsEtCorriger(_ texte: String, _ r: LectureReglages, prof: String = "") -> String {
+        LectureTexte.retirerPrenoms(LectureTexte.corriger(texte, reglages: r), prenoms: r.prenoms, prof: prof)
     }
 }
 
@@ -501,7 +506,8 @@ final class LectureStore {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? URL(fileURLWithPath: NSTemporaryDirectory())
         let dossier = base.appendingPathComponent(Bundle.main.bundleIdentifier ?? "Complete-Cours", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dossier, withIntermediateDirectories: true)
+        try? FileManager.default.createDirectory(at: dossier, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: dossier.path)
         self.url = dossier.appendingPathComponent("Lecture.json")
     }
 
@@ -519,7 +525,7 @@ final class LectureStore {
 
     func sauver(_ base: LectureBase) {
         let enc = JSONEncoder(); enc.outputFormatting = [.prettyPrinted, .sortedKeys]; enc.dateEncodingStrategy = .iso8601
-        if let d = try? enc.encode(base) { try? d.write(to: url, options: .atomic) }
+        if let d = try? enc.encode(base) { try? PrivateFiles.write(d, to: url) }   // dossier 0700, fichier 0600
     }
 
     /// Efface le texte brut des fiches prêtes depuis plus de N jours (la fiche reste).

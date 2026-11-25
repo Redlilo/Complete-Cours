@@ -27,6 +27,15 @@ struct SettingsView: View {
             StudentSettings()
                 .tabItem { Label("Élève", systemImage: "person.crop.circle") }
                 .tag("eleve")
+            SchemaSettings()
+                .tabItem { Label("Schémas", systemImage: "bolt.horizontal") }
+                .tag("schemas")
+            FonctionnementSettings()
+                .tabItem { Label("Fonctionnement", systemImage: "point.3.connected.trianglepath.dotted") }
+                .tag("fonctionnement")
+            DiagnosticSettings()
+                .tabItem { Label("Diagnostic", systemImage: "stethoscope") }
+                .tag("diagnostic")
         }
         .frame(width: 560, height: 640)
     }
@@ -326,6 +335,8 @@ struct StudentSettings: View {
     @AppStorage(Pref.studentName) private var nom = ""
     @AppStorage(Pref.studentFirstName) private var prenom = ""
     @AppStorage(Pref.studentClass) private var classe = ""
+    @State private var confirmErase = false
+    @State private var erased = false
 
     var body: some View {
         Form {
@@ -338,7 +349,23 @@ struct StudentSettings: View {
                 Text("Ces informations servent uniquement à remplir les champs « Nom », « Prénom » et « Classe » des fiches. Elles restent sur ton Mac, sauf si le cours contient un champ d'identité : elles sont alors transmises avec la page au moteur choisi (à Anthropic si c'est Claude).")
                     .font(.callout).foregroundStyle(.secondary)
             }
+            Section("Données gardées sur ce Mac") {
+                Button("Effacer le journal et l'index", role: .destructive) { confirmErase = true }
+                Text(erased ? "C'est fait : les résumés de cours, les réponses gardées de l'IA et l'index de recherche sont effacés."
+                            : "Efface les résumés de cours, les réponses de l'IA gardées et l'index de recherche. Tes PDF ne sont pas touchés ; l'app les relira au besoin.")
+                    .font(.callout).foregroundStyle(.secondary)
+            }
         }
         .formStyle(.grouped)
+        .confirmationDialog("Effacer le journal et l'index ?", isPresented: $confirmErase, titleVisibility: .visible) {
+            Button("Effacer", role: .destructive) {
+                CourseLedger.shared.clearDigests()
+                ContentIndex.shared.clear()
+                erased = true
+            }
+            Button("Annuler", role: .cancel) {}
+        } message: {
+            Text("Cette action est définitive. Tes PDF ne sont pas touchés.")
+        }
     }
 }

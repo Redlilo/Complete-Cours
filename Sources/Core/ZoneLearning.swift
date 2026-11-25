@@ -35,7 +35,8 @@ struct ZoneSignature: Equatable, Codable {
 
     init(zone z: Zone, documentName: String) {
         source = z.source.rawValue
-        widthBucket = Int((z.rect.width / ZoneSignature.widthStep).rounded())
+        let w = z.rect.width / ZoneSignature.widthStep
+        widthBucket = w.isFinite ? Int(max(-1e6, min(1e6, w)).rounded()) : 0      // Int(NaN) ou Int(1e300) planterait
         neighbor = ZoneSignature.neighborText(before: z.contextBefore, after: z.contextAfter)
         model = ZoneSignature.modelName(documentName)
     }
@@ -87,7 +88,7 @@ final class ZoneLearning: @unchecked Sendable {
         init?(raw: String) {
             if raw == "ignore" { self = .ignore }
             else if raw == "confirm" { self = .confirm }
-            else if raw.hasPrefix("kind:"), let k = ZoneKind(rawValue: String(raw.dropFirst(5))), k != .ignorer { self = .kind(k) }
+            else if raw.hasPrefix("kind:"), let k = ZoneKind(rawValue: String(raw.dropFirst(5))), k != .ignorer, k != .schema { self = .kind(k) }
             else { return nil }
         }
     }
@@ -137,6 +138,7 @@ final class ZoneLearning: @unchecked Sendable {
     @discardableResult
     func record(_ action: Action, for z: Zone, documentName: String, path: [String] = []) -> Bool {
         guard ZoneLearning.isAllowed(documentName: documentName, path: path) else { return false }
+        if case .kind(let k) = action, k == .schema { return false }      // jamais mémorisé : seul l'élève marque un schéma
         let sig = ZoneSignature(zone: z, documentName: documentName)
         guard sig.isLearnable else { return false }
         lock.lock()
@@ -159,6 +161,8 @@ final class ZoneLearning: @unchecked Sendable {
         record(.confirm, for: z, documentName: documentName, path: path)
     }
     func recordKind(_ kind: ZoneKind, for z: Zone, documentName: String, path: [String] = []) {
+        // « schéma » n'est jamais mémorisé : seul l'élève marque une zone ainsi, zone par zone
+        if kind == .schema { return }
         record(kind == .ignorer ? .ignore : .kind(kind), for: z, documentName: documentName, path: path)
     }
 
@@ -269,7 +273,6 @@ final class ZoneLearning: @unchecked Sendable {
         encoder.dateEncodingStrategy = .iso8601
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         guard let data = try? encoder.encode(FileContent(entries: snapshot)) else { return }
-        try? FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try? data.write(to: fileURL, options: .atomic)
+        try? PrivateFiles.write(data, to: fileURL)
     }
 }

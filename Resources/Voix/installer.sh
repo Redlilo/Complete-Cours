@@ -19,7 +19,9 @@ rm -rf "$DEST/venv"
 "$PY" -m venv "$DEST/venv"
 
 echo "Téléchargement de la bibliothèque (environ 250 Mo, quelques minutes)…"
-"$DEST/venv/bin/pip" install --quiet --disable-pip-version-check resemblyzer "setuptools<81"
+# Version épinglée (pas « la dernière du jour ») : une nouvelle version publiée ne s'installe jamais toute seule.
+# --require-hashes n'est pas utilisé : il exige les empreintes de chaque dépendance (torch, scipy, librosa…), différentes selon la version de Python et du Mac.
+"$DEST/venv/bin/pip" install --quiet --disable-pip-version-check "resemblyzer==0.1.4" "setuptools<81"
 
 cp "$ICI/voice.py" "$DEST/voice.py"
 echo "Vérification…"

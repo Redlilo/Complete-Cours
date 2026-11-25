@@ -28,6 +28,8 @@ struct LibraryFile: Identifiable, Hashable {
 
     var id: URL { url }
     var name: String { url.deletingPathExtension().lastPathComponent }
+    /// Faux pour un document Word, Pages… : il apparaît dans la bibliothèque et s'ouvre, mais l'app ne le complète pas (PDF seulement).
+    var isPDF: Bool { url.pathExtension.lowercased() == "pdf" }
     /// Chemin relatif à la racine, unique : « Maths/Cours/Séquence 1.pdf ».
     var relativePath: String { (folders + [url.lastPathComponent]).joined(separator: "/") }
 }
@@ -70,6 +72,22 @@ enum LibraryTree {
                                          options: [.skipsHiddenFiles, .skipsPackageDescendants]) else { return [] }
         var result: [LibraryFile] = []
         for case let url as URL in walker where url.pathExtension.lowercased() == "pdf" {
+            if let file = makeFile(root: root, url: url) { result.append(file) }
+        }
+        return result
+    }
+
+    /// Extensions des documents affichés à côté des PDF (ouverts avec leur app, jamais analysés).
+    static let documentExtensions: Set<String> = ["docx", "doc", "odt", "rtf", "pages", "pptx", "ppt", "key", "xlsx", "xls"]
+
+    /// Les documents non PDF sous `root` (Word, Pages…) : fichiers cachés et fichiers temporaires (« ~$… ») ignorés.
+    static func scanDocuments(_ root: URL) -> [LibraryFile] {
+        let fm = FileManager.default
+        guard let walker = fm.enumerator(at: root, includingPropertiesForKeys: nil,
+                                         options: [.skipsHiddenFiles, .skipsPackageDescendants]) else { return [] }
+        var result: [LibraryFile] = []
+        for case let url as URL in walker where documentExtensions.contains(url.pathExtension.lowercased())
+            && !url.lastPathComponent.hasPrefix("~$") {
             if let file = makeFile(root: root, url: url) { result.append(file) }
         }
         return result

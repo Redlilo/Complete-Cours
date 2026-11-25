@@ -57,7 +57,8 @@ struct ZonePanel: View {
             if model.isReady, model.zonesToFill > 0 {
                 ProgressView(value: Double(model.answeredCount), total: Double(max(model.zonesToFill, 1)))
                     .tint(model.answeredCount == model.zonesToFill ? .green : .accentColor)
-                    .accessibilityHidden(true)
+                    .accessibilityLabel("Zones remplies")
+                    .accessibilityValue("\(model.answeredCount) sur \(model.zonesToFill)")
                 Text(model.answeredCount == model.zonesToFill
                      ? "Tout est rempli : relis, puis enregistre le PDF."
                      : "\(Fr.zones(model.zonesToFill - model.answeredCount)) encore \(Fr.plural(model.zonesToFill - model.answeredCount, "vide", "vides")).")
@@ -147,8 +148,12 @@ struct ZonePanel: View {
                 Button("Ouvrir les Réglages") { openSettings() }
             }
         }
-        if case .running(let progress, let zoneID) = model.run, zoneID == nil {
-            RunProgressCard(progress: progress) { model.cancelRun() }
+        if case .running(let progress, let zoneID) = model.run {
+            if progress.label.hasPrefix("Schéma") {
+                SchemaProgressCard(progress: progress) { model.cancelRun() }
+            } else if zoneID == nil {
+                RunProgressCard(progress: progress) { model.cancelRun() }
+            }
         }
         if let problem = model.runProblem {
             Banner(style: .error, title: "Le traitement s'est arrêté", text: problem.message,
@@ -230,6 +235,14 @@ struct ZonePanel: View {
                 .disabled(!model.canComplete)
                 .help("Écrire les réponses avec \(RunSettings.current().engineDisplayName)")
             }
+            if model.schemaZoneCount > 0 {
+                Button { model.drawAllSchemas() } label: {
+                    Label(model.schemaZoneCount > 1 ? "Dessiner tous les schémas" : "Dessiner le schéma", systemImage: "bolt.horizontal")
+                        .frame(maxWidth: .infinity)
+                }
+                .disabled(model.isBusy)
+                .help("Claude Opus 5.5 dessine les zones « Schéma électrique », une après l'autre (symboles CEI 60617)")
+            }
             HStack {
                 Button {
                     if model.isDrawingZone { model.cancelDrawingZone() } else { model.beginDrawingZone() }
@@ -244,6 +257,13 @@ struct ZonePanel: View {
                 }
                 .disabled(!model.canSave)
             }
+            Button { model.addCurrentPageAsSchemaExample() } label: {
+                Label("Prendre cette page comme exemple de schéma", systemImage: "bolt.horizontal")
+            }
+            .buttonStyle(.link)
+            .controlSize(.small)
+            .disabled(!model.canAddSchemaExample)
+            .help("Garde la page affichée comme exemple déjà rempli : Opus 5.5 s'en inspire pour dessiner les schémas")
         }
         .padding(12)
     }
@@ -291,6 +311,8 @@ struct RunProgressCard: View {
         VStack(alignment: .leading, spacing: 8) {
             Text(progress.label).font(.callout.weight(.medium))
             ProgressView(value: min(max(progress.fraction, 0), 1))
+                .accessibilityLabel(progress.label)
+                .accessibilityValue("\(Int((progress.fraction * 100).rounded())) pour cent")
             HStack {
                 Text("\(Int((progress.fraction * 100).rounded())) %")
                     .font(.caption).foregroundStyle(.secondary)

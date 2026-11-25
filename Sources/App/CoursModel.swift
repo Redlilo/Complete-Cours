@@ -36,6 +36,8 @@ struct RunProblem: Equatable {
     init(_ error: Error) {
         if let e = error as? EngineError {
             self.init(message: Fr.sentence(e.localizedDescription), needsSettings: e.isFatal)
+        } else if let e = error as? SchemaErreur, case .indisponible = e {
+            self.init(message: Fr.sentence(e.localizedDescription), needsSettings: true)
         } else {
             self.init(message: Fr.sentence(error.localizedDescription), needsSettings: false)
         }
@@ -121,6 +123,10 @@ final class CoursModel: ObservableObject {
     private let dialogs: Dialogs
     private let defaults: UserDefaults
     private let learning: ZoneLearning
+    /// Exemples déjà remplis montrés à Opus 5.5 pour les schémas (et ajout de la page ouverte comme exemple).
+    let schemaExemples: SchemaExemples
+    /// Remplace le moteur des schémas (tests) ; sinon : clé API du trousseau, ou compte Claude (version personnelle).
+    private let schemaGeneratorOverride: SchemaService.Generateur?
     /// Zones dont le type a été décidé par l'élève (ou par sa mémoire) : le traitement ne le change jamais.
     private var userKindIDs = Set<Int>()
 
@@ -141,8 +147,12 @@ final class CoursModel: ObservableObject {
          engineFactory: @escaping (RunSettings) throws -> CompletionEngine = { try EngineFactory.make($0) },
          dialogs: Dialogs? = nil,
          defaults: UserDefaults = .standard,
-         learning: ZoneLearning = .shared) {
+         learning: ZoneLearning = .shared,
+         schemaExemples: SchemaExemples = .shared,
+         schemaGenerator: SchemaService.Generateur? = nil) {
         self.learning = learning
+        self.schemaExemples = schemaExemples
+        self.schemaGeneratorOverride = schemaGenerator
         self.learnedCount = learning.count
         self.settingsProvider = settings
         self.engineFactory = engineFactory
@@ -172,8 +182,12 @@ final class CoursModel: ObservableObject {
     var isReady: Bool { document != nil && analysis == .done }
 
     var zonePageCount: Int { Set(zones.map { $0.page }).count }
-    var answeredCount: Int { zones.filter { $0.enabled && $0.kind != .ignorer && !$0.answer.isEmpty }.count }
+    var answeredCount: Int { zones.filter { $0.enabled && $0.kind != .ignorer && $0.isFilled }.count }
     var zonesToFill: Int { zones.filter { $0.enabled && $0.kind != .ignorer }.count }
+    /// Zones schéma actives (dessinées par Opus 5.5, pas par le moteur de texte).
+    var schemaZoneCount: Int { zones.filter { $0.kind == .schema && $0.enabled }.count }
+    /// Y a-t-il des zones à faire écrire par le moteur de texte ? (sinon, des schémas seulement : aucun moteur de texte n'est utile)
+    var needsTextEngine: Bool { zones.contains { $0.enabled && $0.kind != .ignorer && $0.kind != .schema } }
     var canComplete: Bool { isReady && !isBusy && zonesToFill > 0 }
     var canSave: Bool { isReady && !isBusy }
     var canDrawZone: Bool { isReady && !isBusy && skippedPages.count < pageCount }
@@ -381,6 +395,7 @@ final class CoursModel: ObservableObject {
 
     /// Retient une correction de l'élève (sans effet pour une évaluation ou une zone sans texte voisin).
     private func remember(_ zone: Zone, _ action: ZoneLearning.Action) {
+        if case .kind(let k) = action, k == .schema { return }     // « schéma » n'est jamais mémorisé
         guard zone.source != .manuel else { return }     // une zone dessinée à la main n'a pas de signature réutilisable
         learning.record(action, for: zone, documentName: documentName, path: learningPath)
         learnedCount = learning.count
@@ -427,7 +442,7 @@ final class CoursModel: ObservableObject {
         guard !isBusy else { return }
         var updated = zones
         var count = 0
-        for i in updated.indices where ZoneTrust.isDoubtful(updated[i]) && updated[i].kind != .ignorer {
+        for i in updated.indices where ZoneTrust.isDoubtful(updated[i]) && updated[i].kind != .ignorer && updated[i].kind != .schema {
             updated[i].kind = .ignorer
             updated[i].enabled = false
             updated[i].answer = ""
@@ -473,7 +488,7 @@ final class CoursModel: ObservableObject {
     func startCompletion() {
         guard document != nil, !isBusy else { return }
         let toFill = zones.filter { $0.enabled && $0.kind != .ignorer }
-        let empty = Set(toFill.filter { $0.answer.isEmpty }.map { $0.id })
+        let empty = Set(toFill.filter { !$0.isFilled }.map { $0.id })
         if !empty.isEmpty, empty.count < toFill.count {
             // déjà des réponses (peut-être corrigées) : par défaut, on ne remplit que les trous restants
             let n = empty.count
@@ -535,47 +550,68 @@ final class CoursModel: ObservableObject {
         run = .running(RunProgress(fraction: 0, label: "Préparation…"), zoneID: singleZone)
 
         let settings = settingsProvider()
-        let engine: CompletionEngine
-        do {
-            engine = try engineFactory(settings)
-        } catch {
-            endRun(token: token, problem: RunProblem(error))
-            return
+        let requested: Set<Int> = ids ?? Set(zones.filter { $0.enabled }.map { $0.id })
+        // Les zones schéma sont dessinées à part, par Opus 5.5 seulement : le moteur de texte ne les voit jamais.
+        let schemaIDs = Set(zones.filter { $0.kind == .schema && requested.contains($0.id) }.map { $0.id })
+        let textPending = zones.contains {
+            requested.contains($0.id) && $0.kind != .schema && !($0.kind == .ignorer && userKindIDs.contains($0.id))
+        }
+        var engine: CompletionEngine?
+        if textPending || schemaIDs.isEmpty {
+            do {
+                engine = try engineFactory(settings)
+            } catch {
+                endRun(token: token, problem: RunProblem(error))
+                return
+            }
         }
 
         // Un moteur sans vision a besoin du texte des pages scannées : on le lit si l'analyse ne l'a pas fait.
-        if !engine.usesImages, !analysisUsedText, analyses.contains(where: { !$0.hasTextLayer && !$0.rotationUnsupported }) {
+        if let e = engine, !e.usesImages, !analysisUsedText, analyses.contains(where: { !$0.hasTextLayer && !$0.rotationUnsupported }) {
             run = .running(RunProgress(fraction: 0, label: "Lecture des pages scannées…"), zoneID: singleZone)
             let manual = zones.filter { $0.source == .manuel }.map { ManualSpec(page: $0.page, rect: $0.rect) }
             await analyzeDocument(generation: generation, needText: true, manual: manual)
             guard token == runToken, generation == documentGeneration else { return }
         }
 
-        let requested: Set<Int> = ids ?? Set(zones.filter { $0.enabled }.map { $0.id })
         let completion = CompletionSettings(humanize: settings.humanize, student: settings.student, humanizeTone: settings.humanizeTone,
                                             userKindZoneIDs: userKindIDs,
                                             verifyDoubtfulHoles: defaults.bool(forKey: Pref.verifyDoubtfulHoles))
         let name = documentName
         var humanizeWarning: String?
+        var schemaProblem: RunProblem?
 
         do {
-            let final = try await CoursPipeline.complete(
-                url: url, documentName: name, analyses: analyses, zones: zones, engine: engine,
-                settings: completion, onlyZoneIDs: ids
-            ) { [weak self] updated, fraction, label in
-                DispatchQueue.main.async {
-                    MainActor.assumeIsolated {
-                        self?.receive(updated, fraction, label, token: token, requested: requested, singleZone: singleZone)
+            if let engine {
+                let final = try await CoursPipeline.complete(
+                    url: url, documentName: name, analyses: analyses, zones: zones, engine: engine,
+                    settings: completion, onlyZoneIDs: ids
+                ) { [weak self] updated, fraction, label in
+                    DispatchQueue.main.async {
+                        MainActor.assumeIsolated {
+                            self?.receive(updated, fraction, label, token: token, requested: requested, singleZone: singleZone)
+                        }
                     }
                 }
+                guard token == runToken, generation == documentGeneration else { return }
+                merge(final, requested: requested)
+                humanizeWarning = pendingHumanizeWarning
+                pendingHumanizeWarning = nil
             }
-            guard token == runToken, generation == documentGeneration else { return }
-            merge(final, requested: requested)
-            humanizeWarning = pendingHumanizeWarning
-            pendingHumanizeWarning = nil
+            // Schémas : une zone après l'autre, avec Opus 5.5 seulement.
+            if !schemaIDs.isEmpty {
+                do {
+                    try await drawSchemas(ids: schemaIDs, url: url, name: name, token: token, generation: generation, settings: settings)
+                } catch let e as SchemaErreur {
+                    guard case .indisponible = e else { throw e }
+                    schemaProblem = RunProblem(e)
+                }
+                guard token == runToken, generation == documentGeneration else { return }
+            }
             finishRun(requested: requested, single: singleZone != nil, humanizeWarning: humanizeWarning)
+            if let schemaProblem { runProblem = schemaProblem; BugJournal.shared.noter("Schémas", schemaProblem.message) }
             #if COMPTE_PERSO
-            if Pref.verifyEnabled(), token == runToken, generation == documentGeneration {
+            if let engine, Pref.verifyEnabled(), token == runToken, generation == documentGeneration {
                 showNotice(.success, "Vérification avec Opus en cours…", offersRetry: false)
                 do {
                     if let report = try await CoursPipeline.verifyAfterCompletion(
@@ -586,7 +622,7 @@ final class CoursModel: ObservableObject {
                                    offersRetry: false)
                     }
                 } catch {
-                    showNotice(.warning, "Vérification impossible : \(error.localizedDescription)", offersRetry: false)
+                    showNotice(.warning, "Vérification impossible : \(Fr.sentence(error.localizedDescription)) Tu peux enregistrer le PDF quand même.", offersRetry: false)
                 }
             }
             #endif
@@ -604,6 +640,93 @@ final class CoursModel: ObservableObject {
             // le message sur chaque zone.
             if problem.needsSettings { clearErrors(of: requested) }
             endRun(token: token, problem: problem)
+        }
+    }
+
+    // MARK: - Schémas électriques (Opus 5.5 uniquement)
+
+    /// Bouton « Dessiner le schéma » d'une zone schéma (ou « Redessiner »).
+    func drawSchema(_ id: Int) {
+        guard document != nil, !isBusy, let z = zone(id), z.kind == .schema else { return }
+        guard z.box != nil else {
+            updateZone(id) { $0.error = SchemaService.messageSansCadre }
+            return
+        }
+        runTask = Task { [weak self] in await self?.complete(only: [id]) }
+    }
+
+    /// Bouton « Dessiner tous les schémas » : toutes les zones schéma actives, une après l'autre.
+    func drawAllSchemas() {
+        let ids = Set(zones.filter { $0.kind == .schema && $0.enabled }.map { $0.id })
+        guard document != nil, !isBusy, !ids.isEmpty else { return }
+        runTask = Task { [weak self] in await self?.complete(only: ids) }
+    }
+
+    /// L'accès à Opus 5.5 : clé API du trousseau d'abord ; sinon (version personnelle) le compte Claude avec l'effort choisi dans les Réglages (« medium » par défaut) ;
+    /// sinon `SchemaErreur.indisponible`. Aucun autre moteur n'est jamais utilisé pour les schémas.
+    private func schemaGenerator(settings: RunSettings) throws -> SchemaService.Generateur {
+        if let schemaGeneratorOverride { return schemaGeneratorOverride }
+        var cle: String?
+        do { cle = try Keychain.read() } catch { throw SchemaErreur.indisponible("\(Fr.sentence(error.localizedDescription)) Vérifie ta clé dans les Réglages.") }
+        var cli: URL?
+        #if COMPTE_PERSO
+        cli = ClaudeCodeEngine.locateCLI(override: settings.claudeCodePath)
+        #endif
+        if let motif = SchemaEngine.motifIndisponible(cleAPI: cle, compteDispo: cli != nil) { throw SchemaErreur.indisponible(motif) }
+        let propre = (cle ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if !propre.isEmpty { return SchemaService.generateur(acces: .cleAPI(propre)) }
+        #if COMPTE_PERSO
+        if let cli { return SchemaService.generateur(acces: .compte(cli: cli, effort: settings.claudeCodeEffort)) }
+        #endif
+        throw SchemaErreur.indisponible(SchemaEngine.messageIndisponible)
+    }
+
+    /// Dessine les schémas demandés (une zone après l'autre) et reporte le résultat dans les zones du modèle.
+    private func drawSchemas(ids: Set<Int>, url: URL, name: String, token: Int, generation: Int, settings: RunSettings) async throws {
+        let generateur = try schemaGenerator(settings: settings)
+        let exemples = schemaExemples.pourDemande(nomDocument: name)
+        let single: Int? = ids.count == 1 ? ids.first : nil
+        let produced = try await SchemaService.dessiner(
+            url: url, documentName: name, zones: zones, ids: ids, exemples: exemples, generateur: generateur
+        ) { [weak self] updated, fraction, label in
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard let self, token == self.runToken, generation == self.documentGeneration, self.isRunning else { return }
+                    self.mergeSchemas(updated, ids: ids)
+                    self.run = .running(RunProgress(fraction: min(max(fraction, 0), 1), label: label), zoneID: single)
+                    self.progressObserver?(fraction, label)
+                    self.requestRender(after: 0)
+                }
+            }
+        }
+        guard token == runToken, generation == documentGeneration else { return }
+        mergeSchemas(produced, ids: ids)
+    }
+
+    /// Reprend le schéma et l'erreur des zones schéma demandées (rien d'autre : le texte n'est jamais touché).
+    private func mergeSchemas(_ produced: [Zone], ids: Set<Int>) {
+        var byID: [Int: Zone] = [:]
+        for z in produced { byID[z.id] = byID[z.id] ?? z }
+        var updated = zones
+        for i in updated.indices where ids.contains(updated[i].id) && updated[i].kind == .schema {
+            guard let p = byID[updated[i].id] else { continue }
+            updated[i].schema = p.schema
+            updated[i].error = p.error
+        }
+        zones = updated
+    }
+
+    /// « Prendre cette page comme exemple de schéma » : la page affichée (relue dans le fichier d'origine, sans nos réponses).
+    var canAddSchemaExample: Bool { document != nil && !isBusy && !schemaExemples.estPlein }
+
+    func addCurrentPageAsSchemaExample() {
+        guard let url = fileURL, let doc = document, !isBusy else { return }
+        let index = previewView?.currentPage.flatMap { doc.index(for: $0) } ?? 0
+        do {
+            let example = try schemaExemples.ajouter(pdf: url, numeroPage: index + 1)
+            showNotice(.success, "La page \(index + 1) est maintenant un exemple de schéma (« \(example.titre) »). Tu peux le renommer dans les Réglages, onglet Schémas.")
+        } catch {
+            showNotice(.warning, Fr.sentence(error.localizedDescription))
         }
     }
 
@@ -662,7 +785,7 @@ final class CoursModel: ObservableObject {
         renderTask?.cancel()
         renderAnswers()
         let done = zones.filter { requested.contains($0.id) }
-        let answered = done.filter { $0.enabled && $0.kind != .ignorer && !$0.answer.isEmpty }.count
+        let answered = done.filter { $0.enabled && $0.kind != .ignorer && $0.isFilled }.count
         let failed = done.filter { $0.error != nil }.count
         if answered > 0 { hasUnsavedChanges = true }
         if single {
@@ -690,6 +813,7 @@ final class CoursModel: ObservableObject {
         guard token == runToken else { return }
         run = .idle
         runProblem = problem
+        BugJournal.shared.noter("Complétion", problem.message)
         requestRender(after: 0)
     }
 
@@ -719,12 +843,19 @@ final class CoursModel: ObservableObject {
 
     func setKind(_ kind: ZoneKind, for id: Int) {
         guard let current = zone(id), current.kind != kind else { return }
+        if kind == .schema, current.box == nil {
+            showNotice(.warning, SchemaService.messageSansCadre)
+            return
+        }
         userKindIDs.insert(id)           // choix de l'élève : jamais changé par un traitement
         learnedNotes[id] = nil
         defer { if let changed = zone(id) { remember(changed, kind == .ignorer ? .ignore : .kind(kind)) } }
         updateZone(id) { z in
             let wasIgnored = z.kind == .ignorer
             z.kind = kind
+            if kind == .schema {                      // un schéma n'est pas du texte : plus de réponse écrite dans cette zone
+                z.answer = ""; z.rawAnswer = ""; z.humanized = false; z.error = nil
+            }
             if kind == .ignorer { z.enabled = false } else if wasIgnored { z.enabled = true }
             // Seules les questions ouvertes sont réécrites : pour une définition, un mot ou une zone ignorée, on remet le texte d'origine.
             if !kind.isHumanizable && z.humanized {

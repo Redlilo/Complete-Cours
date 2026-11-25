@@ -108,7 +108,7 @@ struct AppCommands: Commands {
                 case .evaluations: RevisionModel.evaluations.chooseDocument()
                 case .ecouter: break
                 #if COMPTE_PERSO
-                case .suiviMac: break
+                case .suiviMac, .atlas: break
                 #endif
                 case .bibliotheque, .completer:
                     Navigator.shared.mode = .completer

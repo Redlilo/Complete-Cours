@@ -66,8 +66,12 @@ enum SuiviCalcul {
         }
     }
 
+    /// Un prix exploitable : fini, strictement positif et plausible (un « 0 € » ou un -5 lu par erreur serait « la meilleure offre »).
+    static func prixValide(_ p: Double) -> Bool { p.isFinite && p > 0 && p < 1_000_000 }
+
     static func filtrer(_ liste: [SuiviEvaluation], _ f: SuiviFiltres) -> [SuiviEvaluation] {
         liste.filter { e in
+            if !prixValide(e.offre.prix) { return false }
             if f.livrablesSeulement && e.offre.livraison == .non { return false }
             if f.azertySeulement && e.offre.clavier != "AZERTY" { return false }
             if f.memoire != 0 && e.offre.ram != f.memoire { return false }
@@ -119,7 +123,7 @@ enum SuiviCalcul {
     static func regrouper(_ offres: [SuiviOffre]) -> [SuiviOffre] {
         var par: [String: SuiviOffre] = [:]
         var couleurs: [String: [String]] = [:]
-        for o in offres {
+        for o in offres where prixValide(o.prix) {
             let k = cle(o)
             if let c = par[k] {
                 if o.prix < c.prix { par[k] = o; couleurs[k] = [o.couleur].filter { !$0.isEmpty } }

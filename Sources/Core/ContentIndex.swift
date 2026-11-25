@@ -72,8 +72,13 @@ final class ContentIndex: @unchecked Sendable {
         let store = Store(version: Self.version, entries: entries)
         lock.unlock()
         guard let data = try? JSONEncoder().encode(store) else { return }
-        try? FileManager.default.createDirectory(at: cacheURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try? data.write(to: cacheURL, options: .atomic)
+        try? PrivateFiles.write(data, to: cacheURL)
+    }
+
+    /// Oublie tout l'index (et son fichier).
+    func clear() {
+        lock.lock(); entries = [:]; folded = [:]; lock.unlock()
+        try? FileManager.default.removeItem(at: cacheURL)
     }
 
     var documentCount: Int { lock.lock(); defer { lock.unlock() }; return entries.count }

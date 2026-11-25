@@ -38,11 +38,14 @@ enum LectureVoix {
             .appendingPathComponent("Voix", isDirectory: true)
     }
 
-    /// L'outil de calcul des empreintes : celui installé par l'app, sinon celui indiqué par ECOUTE_VOIX_DIR, sinon celui d'Écoute-Cours.
+    /// L'outil de calcul des empreintes : celui installé par l'app ; dans la version personnelle seulement, aussi celui indiqué par
+    /// ECOUTE_VOIX_DIR et celui d'Écoute-Cours. La version distribuée n'exécute jamais un Python venu d'ailleurs que de son propre dossier.
     static func aide() -> Aide? {
         var dossiers: [URL] = [dossierInstallation]
+        #if COMPTE_PERSO
         if let d = ProcessInfo.processInfo.environment["ECOUTE_VOIX_DIR"] { dossiers.append(URL(fileURLWithPath: d)) }
         dossiers.append(FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Desktop/Projets/Ecoute-Cours/app"))
+        #endif
         for d in dossiers {
             let py = d.appendingPathComponent("venv/bin/python3"), sc = d.appendingPathComponent("voice.py")
             if FileManager.default.isExecutableFile(atPath: py.path), FileManager.default.fileExists(atPath: sc.path) {

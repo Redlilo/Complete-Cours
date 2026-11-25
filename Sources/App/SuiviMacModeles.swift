@@ -216,6 +216,13 @@ enum SuiviModeles {
             out.append(SuiviAlerte(titre: "Bonne affaire : \(Int(a.ecart.rounded())) % sous le marché",
                                    texte: "\(SuiviCalcul.nomCourt(a.offre)) chez \(a.offre.source) : \(eur(a.offre.prix)) (marché : \(eur(a.reference)))"))
         }
+        // 5. Un saut devient « très rentable » : rajouter un peu d'argent rapporte beaucoup de performance
+        func fiable(_ evs: [SuiviEvaluation]) -> [SuiviEvaluation] { evs.filter { !$0.offre.annonceParticulier } }
+        let avantTresRentables = Set(echelle(fiable(eAvant)).echelons.filter { $0.verdict.niveau == 3 }.map(\.vers.id))
+        if let saut = echelle(fiable(eApres)).echelons.first(where: { $0.verdict.niveau == 3 && $0.deltaPourcent >= 8 && !avantTresRentables.contains($0.vers.id) }) {
+            out.append(SuiviAlerte(titre: "Saut très rentable : +\(eur(saut.deltaPrix)) pour +\(Int(saut.deltaPourcent.rounded())) % de performance",
+                                   texte: "\(SuiviCalcul.nomCourt(saut.de.offre)) (\(eur(saut.de.offre.prix))) → \(SuiviCalcul.nomCourt(saut.vers.offre)) chez \(saut.vers.offre.source) (\(eur(saut.vers.offre.prix)))"))
+        }
         return out
     }
 
@@ -274,11 +281,169 @@ enum SuiviModeles {
         var l = ["Machine;Vendeur;Pays;État;Prix (€);Go/s;€ par Go/s;Livraison;Clavier;Lien"]
         for e in evals {
             let o = e.offre
-            l.append([c(SuiviCalcul.nomCourt(o)), c(o.source), o.pays, c(o.etat.libelle), String(Int(o.prix)), e.bande.map(String.init) ?? "",
+            l.append([c(SuiviCalcul.nomCourt(o)), c(o.source), o.pays, c(o.etat.libelle), String(Int(o.prix.isFinite ? max(-1e9, min(1e9, o.prix)) : 0)), e.bande.map(String.init) ?? "",
                       e.score.map { String(format: "%.2f", $0).replacingOccurrences(of: ".", with: ",") } ?? "",
                       c(o.livraison.libelle), c(o.clavier), c(o.url)].joined(separator: ";"))
         }
         return l.joined(separator: "\n")
     }
+}
+
+// MARK: - Échelle de performance : que coûte le gain quand on rajoute un peu ?
+
+/// Un échelon entre deux offres voisines de la « frontière » (chaque offre est plus chère ET plus rapide que la précédente).
+struct SuiviEchelon: Identifiable {
+    var de: SuiviEvaluation
+    var vers: SuiviEvaluation
+    var deltaPrix: Double
+    var deltaBande: Int
+    var deltaPourcent: Double          // gain de bande passante en %
+    var euroParGoS: Double             // coût de chaque Go/s en plus
+    var rapport: Double                // euroParGoS ÷ prix actuel par Go/s de l'offre de départ (< 1 : le saut est plus rentable que ce que tu paies déjà)
+    var id: String { de.id + ">" + vers.id }
+
+    var verdict: (texte: String, niveau: Int) {   // niveau : 3 très rentable, 2 rentable, 1 correct, 0 cher
+        if rapport < 0.75 { return ("Très rentable", 3) }
+        if rapport < 1.0 { return ("Rentable", 2) }
+        if rapport < 1.5 { return ("Correct", 1) }
+        return ("Cher pour le gain", 0)
+    }
+}
+
+struct SuiviEchelle {
+    var echelons: [SuiviEchelon]
+    /// Dernière offre qu'il vaut le coup d'atteindre (voir `echelle`).
+    var optimum: SuiviEvaluation?
+    var meilleurSaut: SuiviEchelon?
+}
+
+extension SuiviModeles {
+    /// `evals` : offres déjà filtrées (livrables…). `exclus` : identifiants à ignorer (prix suspects).
+    static func echelle(_ evals: [SuiviEvaluation], exclus: Set<String> = []) -> SuiviEchelle {
+        let candidates = evals.filter { $0.bande != nil && $0.offre.livraison != .non && !exclus.contains($0.id) }
+            .sorted { ($0.offre.prix, -($0.bande ?? 0)) < ($1.offre.prix, -($1.bande ?? 0)) }
+        var frontiere: [SuiviEvaluation] = []
+        for e in candidates {
+            if let d = frontiere.last, let db = d.bande, let eb = e.bande, eb <= db { continue }   // moins cher déjà aussi rapide
+            frontiere.append(e)
+        }
+        var echelons: [SuiviEchelon] = []
+        for (a, b) in zip(frontiere, frontiere.dropFirst()) {
+            guard let ba = a.bande, let bb = b.bande, let sa = a.score else { continue }
+            let dp = b.offre.prix - a.offre.prix, db = bb - ba
+            guard dp > 0, db > 0 else { continue }
+            let marginal = dp / Double(db)
+            echelons.append(SuiviEchelon(de: a, vers: b, deltaPrix: dp, deltaBande: db, deltaPourcent: Double(db) / Double(ba) * 100,
+                                         euroParGoS: marginal, rapport: marginal / sa))
+        }
+        // Point d'arrêt : depuis une offre, on saute vers la plus lointaine dont le coût par Go/s EN PLUS reste au plus égal à ce qu'on
+        // paie déjà par Go/s (on regarde plus loin que le saut suivant : un saut cher peut être suivi d'un très bon).
+        var optimum = frontiere.first
+        var i = 0
+        while i < frontiere.count - 1 {
+            guard let bi = frontiere[i].bande, let si = frontiere[i].score else { break }
+            var suivant: Int?
+            for j in stride(from: frontiere.count - 1, to: i, by: -1) {
+                guard let bj = frontiere[j].bande, bj > bi else { continue }
+                if (frontiere[j].offre.prix - frontiere[i].offre.prix) / Double(bj - bi) <= si { suivant = j; break }
+            }
+            guard let j = suivant else { break }
+            i = j; optimum = frontiere[j]
+        }
+        return SuiviEchelle(echelons: echelons, optimum: optimum, meilleurSaut: echelons.min { $0.euroParGoS < $1.euroParGoS })
+    }
+}
+
+/// Un point de la courbe de l'échelle : à chaque relevé, le meilleur saut et le prix du point d'arrêt conseillé.
+struct SuiviPointEchelle: Identifiable {
+    var date: Date
+    var euroParGoS: Double?       // coût du meilleur saut (€ par Go/s en plus)
+    var prixOptimum: Double?      // prix de l'offre jusqu'où il vaut le coup de monter
+    var id: Date { date }
+}
+
+extension SuiviModeles {
+
+    /// L'échelle à chaque relevé (annonces de particuliers exclues), pour une mémoire donnée (0 = toutes).
+    static func historiqueEchelle(_ releves: [SuiviReleve], manuelles: [SuiviOffre], filtres: SuiviFiltres, ram: Int) -> [SuiviPointEchelle] {
+        releves.compactMap { r in
+            let offres = SuiviCalcul.regrouper(r.offres) + manuelles.filter { ($0.ajoutee ?? .distantPast) <= r.date }
+            let evs = SuiviCalcul.filtrer(offres.map { SuiviCalcul.evaluer($0) }, filtres)
+                .filter { !$0.offre.annonceParticulier && (ram == 0 || $0.offre.ram == ram) }
+            let e = echelle(evs)
+            guard e.meilleurSaut != nil || e.optimum != nil else { return nil }
+            return SuiviPointEchelle(date: r.date, euroParGoS: e.meilleurSaut?.euroParGoS, prixOptimum: e.optimum?.offre.prix)
+        }
+    }
+}
+
+// MARK: - Vitesse d'une IA locale : mesures publiques + taille du modèle visé
+
+/// Précision des poids : 4 bits (léger, un peu moins précis) ou 8 bits (plus précis, environ deux fois plus gros et plus lent).
+enum SuiviQuant: String, CaseIterable, Identifiable {
+    case q4 = "4 bits", q8 = "8 bits"
+    var id: String { rawValue }
+    /// Go de mémoire par milliard de paramètres (Q4_K_M ≈ 0,61 ; Q8_0 ≈ 1,06).
+    var gigaParMilliard: Double { self == .q4 ? 0.61 : 1.06 }
+}
+
+/// Un modèle d'IA visé. Un modèle « mixture d'experts » (MoE) occupe toute sa taille en mémoire mais ne lit, pour chaque mot produit,
+/// que ses paramètres actifs : il est bien plus rapide qu'un modèle classique de même taille.
+struct SuiviModeleIA: Identifiable, Hashable {
+    var nom: String
+    var milliardsTotal: Double
+    var milliardsActifs: Double
+    var id: String { nom }
+    var moe: Bool { milliardsActifs < milliardsTotal }
+
+    /// Place prise en mémoire.
+    func tailleGo(_ q: SuiviQuant) -> Double { milliardsTotal * q.gigaParMilliard }
+    /// Quantité lue à chaque mot produit (c'est elle qui fixe la vitesse).
+    func lectureGo(_ q: SuiviQuant) -> Double { milliardsActifs * q.gigaParMilliard }
+
+    static let tous = [
+        SuiviModeleIA(nom: "8B", milliardsTotal: 8, milliardsActifs: 8),
+        SuiviModeleIA(nom: "14B", milliardsTotal: 14, milliardsActifs: 14),
+        SuiviModeleIA(nom: "32B", milliardsTotal: 32, milliardsActifs: 32),
+        SuiviModeleIA(nom: "70B", milliardsTotal: 70, milliardsActifs: 70),
+        SuiviModeleIA(nom: "30B-A3B (MoE)", milliardsTotal: 30, milliardsActifs: 3),
+        SuiviModeleIA(nom: "120B-A5B (MoE)", milliardsTotal: 120, milliardsActifs: 5),
+    ]
+    static let parDefaut = tous[2]
+}
+
+enum SuiviTient { case oui, juste, non }
+
+enum SuiviVitesse {
+    /// Mesures publiques llama.cpp (discussion n° 4167 : Llama 7B quantifié Q4_0, génération « tg128 »), en tokens/s.
+    /// Clé : puce|cœurs GPU. Sources secondaires : à prendre comme des ordres de grandeur.
+    static let mesures: [String: Double] = ["M2 Max|38": 65.95, "M3 Max|40": 66.31, "M4 Max|32": 69.95, "M4 Max|40": 83.06]
+    /// Taille du modèle de référence de ces mesures (Llama 7B Q4_0).
+    static let tailleReference = 3.83
+    /// Un modèle MoE perd un peu de vitesse (choix des experts à chaque mot) : facteur appliqué à la vitesse.
+    static let facteurMoE = 0.8
+
+    /// Part de la bande passante réellement utilisée, déduite de ces mesures (≈ 0,63 jusqu'à 410 Go/s, ≈ 0,58 vers 546 Go/s).
+    static func rendement(bande: Int) -> Double { bande >= 500 ? 0.58 : 0.63 }
+
+    /// `mesure` vrai : la valeur vient d'une mesure publique de cette puce, ramenée à ce qui est lu par mot ; sinon c'est une estimation.
+    static func tokensParSeconde(puce: String, gpu: Int?, bande: Int, modele: SuiviModeleIA, quant: SuiviQuant = .q4) -> (valeur: Double, mesure: Bool) {
+        let lecture = modele.lectureGo(quant), f = modele.moe ? facteurMoE : 1
+        if let g = gpu, let m = mesures["\(puce)|\(g)"] { return (m * tailleReference / lecture * f, true) }
+        return (rendement(bande: bande) * Double(bande) / lecture * f, false)
+    }
+
+    /// Le modèle tient-il dans la mémoire ? macOS laisse environ 75 % de la mémoire au GPU ; il faut aussi la place du contexte (≈ 3 Go).
+    static func tient(ram: Int, modele: SuiviModeleIA, quant: SuiviQuant = .q4) -> SuiviTient {
+        let besoin = modele.tailleGo(quant) * 1.03 + 3
+        let dispo = Double(ram) * 0.75
+        if besoin > dispo { return .non }
+        return besoin > dispo * 0.9 ? .juste : .oui
+    }
+}
+
+extension SuiviModeles {
+    /// Ancienne estimation simple (modèle de 20 Go), gardée pour les tests et les alertes.
+    static func tokensParSeconde(bande: Int) -> Double { SuiviVitesse.rendement(bande: bande) * Double(bande) / 20 }
 }
 #endif

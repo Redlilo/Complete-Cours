@@ -172,7 +172,7 @@ struct CompteSettings: View {
             } catch is CancellationError {
                 // Annulé par l'élève : rien à afficher.
             } catch {
-                loginError = error.localizedDescription
+                loginError = "\(Fr.sentence(error.localizedDescription)) Réessaie, ou vérifie ta connexion internet."
             }
             await refreshStatus()
         }

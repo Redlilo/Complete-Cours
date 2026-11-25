@@ -86,6 +86,8 @@ enum RevisionExport {
 private enum Look {
     static let accent = NSColor(srgbRed: 0.10, green: 0.31, blue: 0.62, alpha: 1)
     static let ink = NSColor(srgbRed: 0.08, green: 0.09, blue: 0.11, alpha: 1)
+    /// Les RÉPONSES s'écrivent en bleu (comme au stylo bleu), les questions restent en noir.
+    static let reponse = NSColor(srgbRed: 0.05, green: 0.15, blue: 0.75, alpha: 1)
     static let gray = NSColor(srgbRed: 0.38, green: 0.40, blue: 0.44, alpha: 1)
     static let green = NSColor(srgbRed: 0.09, green: 0.46, blue: 0.22, alpha: 1)
     static let orange = NSColor(srgbRed: 0.72, green: 0.40, blue: 0.00, alpha: 1)
@@ -106,7 +108,7 @@ private enum Look {
             NSColor(srgbRed: 0.05, green: 0.46, blue: 0.50, alpha: 1), NSColor(srgbRed: 0.28, green: 0.30, blue: 0.68, alpha: 1),
         ]
         let h = name.unicodeScalars.reduce(5381) { ($0 &* 33) &+ Int($1.value) }
-        return palette[abs(h) % palette.count]
+        return palette[Int(h.magnitude % UInt(palette.count))]
     }
 
     /// Fond très clair de la couleur donnée.
@@ -333,8 +335,8 @@ private final class PDFComposer {
         let big = Look.attr(main, size: 15, bold: true, style: Look.para(spacing: 3))
         let small = legend.isEmpty ? nil : Look.attr(legend, size: 10.5, color: Look.gray, style: Look.para(spacing: 2))
         let hBig = measure(big, width: w), hSmall = small.map { measure($0, width: w) + 4 } ?? 0
-        let h = hBig + hSmall + 20
-        ensure(min(h, pageHeight))
+        let h = min(hBig + hSmall + 20, pageHeight)
+        ensure(h)
         fill(x: margin, top: y, w: contentWidth, h: h, color: Look.amberTint, radius: 6)
         fill(x: margin, top: y + 5, w: 4, h: h - 10, color: Look.amber, radius: 2)
         drawBox(big, x: margin + inner, top: y + 10, width: w, height: hBig)
@@ -366,12 +368,31 @@ private final class PDFComposer {
         y = h + 22
     }
 
+    /// Découpe un texte trop haut pour `maxHeight` en plusieurs morceaux qui tiennent chacun.
+    func splitToFit(_ s: NSAttributedString, width: CGFloat, maxHeight: CGFloat) -> [NSAttributedString] {
+        guard s.length > 0, measure(s, width: width) > maxHeight else { return [s] }
+        let fs = CTFramesetterCreateWithAttributedString(s)
+        var out: [NSAttributedString] = [], loc = 0
+        while loc < s.length {
+            var fit = CFRange()
+            CTFramesetterSuggestFrameSizeWithConstraints(fs, CFRange(location: loc, length: 0), nil,
+                                                         CGSize(width: width, height: maxHeight), &fit)
+            let len = max(1, min(fit.length, s.length - loc))
+            out.append(s.attributedSubstring(from: NSRange(location: loc, length: len)))
+            loc += len
+        }
+        return out
+    }
+
     /// Cadre coloré avec titre et lignes ; si les lignes ne tiennent pas sur la page, le cadre continue sur la suivante
     /// (« suite ») sans jamais couper une ligne en deux.
     func boxed(title: String, color: NSColor, tint: NSColor, rows: [NSAttributedString]) {
         let pad: CGFloat = 13, headH: CGFloat = 30, gap: CGFloat = 7, bottomPad: CGFloat = 12
         let w = contentWidth - 2 * pad
-        let heights = rows.map { min(measure($0, width: w), pageHeight - headH - 40) }
+        let maxRow = pageHeight - headH - 40
+        // une ligne plus haute qu'une page est découpée en morceaux (rien n'est perdu)
+        let rows = rows.flatMap { splitToFit($0, width: w, maxHeight: maxRow) }
+        let heights = rows.map { min(measure($0, width: w), maxRow) }
         var i = 0, chunk = 0
         while i < rows.count {
             let avail = bottom - y - headH - 8 - bottomPad
@@ -421,8 +442,8 @@ private final class PDFComposer {
             let left = cell(items[i].0, items[i].1)
             let right = i + 1 < items.count ? cell(items[i + 1].0, items[i + 1].1) : nil
             let inner = cw - 2 * pad - 4
-            let h = max(measure(left, width: inner), right.map { measure($0, width: inner) } ?? 0) + 2 * pad
-            ensure(min(h, pageHeight))
+            let h = min(max(measure(left, width: inner), right.map { measure($0, width: inner) } ?? 0) + 2 * pad, pageHeight)
+            ensure(h)
             for (k, a) in ([left, right] as [NSAttributedString?]).enumerated() {
                 guard let a else { continue }
                 let x = margin + CGFloat(k) * (cw + gapX)
@@ -476,23 +497,33 @@ private final class PDFComposer {
         let inset: CGFloat = 9
         let ix = x + inset, itop = top + inset, iw = w - 2 * inset, ih = h - 2 * inset
         let color = front ? accent : Look.green
+        let tagColor = front ? Look.ink : Look.reponse
         fill(x: ix, top: itop, w: iw, h: ih, color: front ? .white : Look.softTint(color), radius: 10)
         ctx.setStrokeColor(color.withAlphaComponent(0.8).cgColor); ctx.setLineWidth(1.2)
         ctx.addPath(CGPath(roundedRect: CGRect(x: ix, y: Self.pageH - itop - ih, width: iw, height: ih), cornerWidth: 10, cornerHeight: 10, transform: nil))
         ctx.strokePath()
         let tag = NSMutableAttributedString(string: "\(front ? "QUESTION" : "RÉPONSE") · \(card.id)", attributes: [
-            .font: Look.font(8, bold: true), .foregroundColor: color, .paragraphStyle: Look.para()])
+            .font: Look.font(8, bold: true), .foregroundColor: tagColor, .paragraphStyle: Look.para()])
         drawBox(tag, x: ix + 12, top: itop + 10, width: iw - 24, height: 11)
         // texte centré, taille réduite jusqu'à ce qu'il tienne
         let content = front ? card.front : card.back
         let areaTop = itop + 28, areaH = ih - 28 - 14, areaW = iw - 28
         let center = NSMutableParagraphStyle(); center.alignment = .center; center.lineSpacing = 3
         var size: CGFloat = front ? 16 : 13.5
-        var a = NSAttributedString()
-        while true {
-            a = NSAttributedString(string: content, attributes: [.font: Look.font(size, bold: front), .foregroundColor: Look.ink, .paragraphStyle: center])
-            if measure(a, width: areaW) <= areaH || size <= 8 { break }
-            size -= 0.5
+        func styled(_ t: String, _ sz: CGFloat) -> NSAttributedString {
+            NSAttributedString(string: t, attributes: [.font: Look.font(sz, bold: front), .foregroundColor: front ? Look.ink : Look.reponse, .paragraphStyle: center])
+        }
+        var a = styled(content, size)
+        while measure(a, width: areaW) > areaH && size > 7 { size -= 0.5; a = styled(content, size) }
+        if measure(a, width: areaW) > areaH {
+            // texte vraiment trop long pour une carte : on le raccourcit proprement avec « … » plutôt que de le couper net
+            var chars = Array(content), lo = 0, hi = chars.count
+            while lo < hi {
+                let mid = (lo + hi + 1) / 2
+                if measure(styled(String(chars[..<mid]) + "…", size), width: areaW) <= areaH { lo = mid } else { hi = mid - 1 }
+            }
+            chars = Array(chars[..<lo])
+            a = styled(String(chars).trimmingCharacters(in: .whitespacesAndNewlines) + "…", size)
         }
         let th = min(measure(a, width: areaW), areaH)
         drawBox(a, x: ix + 14, top: areaTop + (areaH - th) / 2, width: areaW, height: th)
@@ -529,7 +560,7 @@ private final class PDFComposer {
     func question(_ q: RevisionQuestion, number: Int) {
         var head = "Question \(number) · \(q.style.label)"
         if let p = q.page { head += " · page \(p) du cours" }
-        let h = Look.attr(head, size: 10.5, bold: true, color: Look.accent)
+        let h = Look.attr(head, size: 10.5, bold: true, color: Look.gray)
         let body = Look.attr(q.question, size: 12, style: Look.para(spacing: 3))
         let choiceStyle = Look.para(spacing: 2, head: 0)
         let choiceAttrs: [NSAttributedString] = q.choices.enumerated().map { i, c in
@@ -559,8 +590,8 @@ private final class PDFComposer {
         var expected = q.expected
         if q.style == .qcm, let i = q.choices.firstIndex(of: q.expected) { expected = "\(letter(i)). \(q.expected)" }
         let a = NSMutableAttributedString()
-        a.append(Look.attr("\(number). ", size: 11.5, bold: true, color: Look.accent))
-        a.append(Look.attr(expected, size: 11.5, bold: true, color: Look.green))
+        a.append(Look.attr("\(number). ", size: 11.5, bold: true, color: Look.ink))
+        a.append(Look.attr(expected, size: 11.5, bold: true, color: Look.reponse))
         if !q.explanation.isEmpty { a.append(Look.attr("\n" + q.explanation, size: 10.5, color: Look.gray)) }
         let para = Look.para(spacing: 2)
         a.addAttribute(.paragraphStyle, value: para, range: NSRange(location: 0, length: a.length))
@@ -588,7 +619,7 @@ private final class PDFComposer {
         fields.append(it.studentAnswer.isEmpty ? field("Ta réponse", "(rien d'écrit, ou illisible)", color: Look.gray, italic: true)
                                                : field("Ta réponse", it.studentAnswer))
         if !it.teacherRemark.isEmpty { fields.append(field("Remarque du professeur", it.teacherRemark, color: Look.orange)) }
-        if !it.correctAnswer.isEmpty { fields.append(field("Bonne réponse", it.correctAnswer, color: Look.green, bold: true)) }
+        if !it.correctAnswer.isEmpty { fields.append(field("Bonne réponse", it.correctAnswer, color: Look.reponse, bold: true)) }
         if !it.explanation.isEmpty { fields.append(field("Explication", it.explanation)) }
         if !it.toRemember.isEmpty { fields.append(field("À retenir", it.toRemember, color: Look.accent, bold: true)) }
 

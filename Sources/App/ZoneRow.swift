@@ -7,6 +7,7 @@ struct ZoneRow: View {
     @State private var draft = ""
     @State private var showOriginal = false
     @FocusState private var focused: Bool
+    @State private var confirmDelete = false
 
     private var isSelected: Bool { model.selectedZoneID == zone.id }
     private var isManual: Bool { zone.source == .manuel }
@@ -15,7 +16,8 @@ struct ZoneRow: View {
         if case .running(_, let id) = model.run { return id == zone.id }
         return false
     }
-    private var hasAnswer: Bool { !zone.answer.isEmpty }
+    private var isSchema: Bool { zone.kind == .schema }
+    private var hasAnswer: Bool { zone.isFilled }
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
@@ -34,7 +36,9 @@ struct ZoneRow: View {
                 }
                 if isIgnored {
                     Text("Cette zone est ignorée : rien n'y sera écrit.")
-                        .font(.caption).foregroundStyle(.tertiary)
+                        .font(.caption).foregroundStyle(.secondary)
+                } else if isSchema {
+                    schemaBlock
                 } else {
                     answerField
                     statusLines
@@ -51,6 +55,15 @@ struct ZoneRow: View {
         .onChange(of: focused) { _, now in if now { model.select(zone.id, from: .list) } }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Zone \(zone.number), page \(zone.page + 1), \(zone.kind.label), \(stateText)")
+        .accessibilityAddTraits(.isButton)
+        .accessibilityHint("Sélectionne cette zone et l'affiche sur la page")
+        .accessibilityAction { model.select(zone.id, from: .list) }
+        .confirmationDialog("Supprimer cette zone ?", isPresented: $confirmDelete, titleVisibility: .visible) {
+            Button("Supprimer la zone", role: .destructive) { model.deleteManualZone(zone.id) }
+            Button("Annuler", role: .cancel) {}
+        } message: {
+            Text("La zone que tu as dessinée et sa réponse seront retirées.")
+        }
     }
 
     // MARK: État et couleur par type
@@ -62,12 +75,14 @@ struct ZoneRow: View {
         case .definition: return .purple
         case .question: return .orange
         case .ignorer: return .gray
+        case .schema: return .teal
         }
     }
 
     private var stateText: String {
         if isIgnored { return "ignorée" }
         if zone.error != nil { return "erreur" }
+        if isSchema { return hasAnswer ? "schéma dessiné" : "schéma à dessiner" }
         return hasAnswer ? "répondue" : "vide"
     }
 
@@ -76,6 +91,7 @@ struct ZoneRow: View {
             if isThisRunning { Tag(text: "En cours", color: .accentColor) }
             else if isIgnored { Tag(text: "Ignorée", color: .gray) }
             else if zone.error != nil { Tag(text: "Erreur", color: .red) }
+            else if isSchema { Tag(text: hasAnswer ? "Dessiné" : "À dessiner", color: hasAnswer ? .green : .secondary) }
             else if hasAnswer { Tag(text: "Répondue", color: .green) }
             else { Tag(text: "Vide", color: .secondary) }
         }
@@ -105,7 +121,10 @@ struct ZoneRow: View {
     private var topLine: some View {
         HStack(spacing: 8) {
             Picker("Type de zone", selection: Binding(get: { zone.kind }, set: { model.setKind($0, for: zone.id) })) {
-                ForEach(ZoneKind.allCases) { kind in Text(kind.label).tag(kind) }
+                ForEach(ZoneKind.allCases) { kind in
+                    if let symbol = kind.symbolName { Label(kind.label, systemImage: symbol).tag(kind) }
+                    else { Text(kind.label).tag(kind) }
+                }
             }
             .labelsHidden()
             .pickerStyle(.menu)
@@ -140,6 +159,53 @@ struct ZoneRow: View {
             .focused($focused)
             .disabled(model.isRunning)
             .accessibilityLabel("Réponse de la zone \(zone.number)")
+    }
+
+    // MARK: Zone schéma
+
+    /// État du schéma, aperçu, remarque de l'IA, erreur et boutons. Aucun champ de texte : un schéma n'est pas du texte.
+    @ViewBuilder private var schemaBlock: some View {
+        if zone.box == nil {
+            Label(SchemaService.messageSansCadre, systemImage: "rectangle.dashed")
+                .font(.caption).foregroundStyle(.orange)
+                .fixedSize(horizontal: false, vertical: true)
+        } else if let schema = zone.schema {
+            Text("Dessiné : \(schema.symboles.count) symbole\(schema.symboles.count > 1 ? "s" : "")")
+                .font(.caption.weight(.medium)).foregroundStyle(.green)
+            SchemaThumbnail(schema: schema)
+            if !schema.remarque.isEmpty {
+                Label(schema.remarque, systemImage: "text.bubble")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        } else if !isThisRunning {
+            Text("À dessiner : clique sur « Dessiner le schéma ».")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+        if let error = zone.error {
+            Label(Fr.sentence(error), systemImage: "xmark.octagon.fill")
+                .font(.caption).foregroundStyle(.red)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        HStack(spacing: 8) {
+            Button {
+                model.drawSchema(zone.id)
+            } label: {
+                Label(zone.schema == nil ? "Dessiner le schéma" : "Redessiner", systemImage: "bolt.horizontal")
+            }
+            .disabled(model.isBusy || zone.box == nil)
+            .help("Claude Opus 5.5 dessine le schéma dans le cadre, avec les symboles de la norme CEI 60617")
+            Text("Opus 5.5 uniquement").font(.caption2).foregroundStyle(.secondary)
+            Spacer(minLength: 0)
+            if isManual {
+                Button(role: .destructive) { confirmDelete = true } label: {
+                    Label("Supprimer la zone", systemImage: "trash")
+                }
+                .disabled(model.isBusy)
+            }
+        }
+        .controlSize(.small)
+        .labelStyle(.titleAndIcon)
     }
 
     @ViewBuilder private var statusLines: some View {
@@ -210,7 +276,7 @@ struct ZoneRow: View {
             .help("Ignore toutes les zones du même genre dans ce document, et s'en souvient pour les prochains cours du même modèle")
             Spacer(minLength: 0)
             if isManual {
-                Button(role: .destructive) { model.deleteManualZone(zone.id) } label: {
+                Button(role: .destructive) { confirmDelete = true } label: {
                     Label("Supprimer la zone", systemImage: "trash")
                 }
                 .disabled(model.isBusy)

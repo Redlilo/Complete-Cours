@@ -2,6 +2,8 @@ import SwiftUI
 import AppKit
 import PDFKit
 import Combine
+import QuickLookThumbnailing
+import QuickLookUI
 
 /// Lit le dossier des cours (par défaut ~/Desktop/Cours) et garde l'arborescence + les dossiers dépliés.
 @MainActor
@@ -11,6 +13,8 @@ final class LibraryModel: ObservableObject {
     static let expandedKey = "libraryExpanded"
 
     @Published private(set) var files: [LibraryFile] = []
+    /// Documents non PDF (Word, Pages…) : listés et ouverts avec leur app, jamais analysés ni indexés.
+    @Published private(set) var documents: [LibraryFile] = []
     @Published private(set) var tree = LibraryFolder.empty
     @Published private(set) var expanded: Set<String>
     @Published private(set) var isScanning = false
@@ -23,7 +27,10 @@ final class LibraryModel: ObservableObject {
     @Published private(set) var pairedOriginals: Set<URL> = []
     @Published var root: URL
     /// Indexation du contenu en cours : (cours lus, total). nil quand il n'y a rien à lire.
-    @Published private(set) var indexProgress: (done: Int, total: Int)?
+    /// La progression vit dans son propre objet : si elle était publiée par le modèle, CHAQUE ligne de la liste (qui l'observe)
+    /// se redessinerait à chaque cours lu, et l'app se figeait après un rangement automatique.
+    let indexStatus = LibraryIndexStatus()
+    var indexProgress: (done: Int, total: Int)? { indexStatus.progress }
     /// Cours dont le contenu contient la recherche (en plus des résultats par nom).
     @Published private(set) var contentHits: [ContentHit] = []
     /// Page et mots à montrer dans l'aperçu après un clic sur un résultat de contenu.
@@ -80,13 +87,15 @@ final class LibraryModel: ObservableObject {
         indexTask?.cancel()
         indexTask = Task {
             let task = Task.detached(priority: .background) { [weak self] in
+                let limiteur = IndexProgressLimiter()
                 ContentIndex.shared.update(files: found, isCancelled: { Task.isCancelled }, progress: { done, total in
-                    Task { @MainActor in self?.indexProgress = done >= total ? nil : (done, total) }
+                    guard done >= total || limiteur.laisserPasser() else { return }    // au plus 2 mises à jour par seconde
+                    Task { @MainActor in self?.indexStatus.progress = done >= total ? nil : (done, total) }
                 })
             }
             await withTaskCancellationHandler { await task.value } onCancel: { task.cancel() }
             if Task.isCancelled { return }
-            indexProgress = nil
+            indexStatus.progress = nil
             updateSearch(searchQuery)
         }
     }
@@ -112,15 +121,16 @@ final class LibraryModel: ObservableObject {
         isScanning = true
         problem = nil
         Task {
-            let found = await Task.detached(priority: .userInitiated) { LibraryTree.scan(root) }.value
+            let (found, docs) = await Task.detached(priority: .userInitiated) { (LibraryTree.scan(root), LibraryTree.scanDocuments(root)) }.value
             files = found
-            tree = LibraryTree.build(found)
+            documents = docs
+            tree = LibraryTree.build(found + docs)
             isScanning = false
             reloadStates()
             startIndexing(found)
             if !FileManager.default.fileExists(atPath: root.path) {
                 problem = "Le dossier « \(root.lastPathComponent) » est introuvable. Choisis le dossier de tes cours."
-            } else if found.isEmpty {
+            } else if found.isEmpty && docs.isEmpty {
                 problem = "Aucun PDF trouvé dans « \(root.lastPathComponent) »."
             }
         }
@@ -167,9 +177,20 @@ final class Thumbnails {
 
     func image(for url: URL) async -> NSImage? {
         if let hit = cache.object(forKey: url as NSURL) { return hit }
-        let img = await Task.detached(priority: .utility) {
-            PDFDocument(url: url)?.page(at: 0)?.thumbnail(of: CGSize(width: 150, height: 200), for: .cropBox)
-        }.value
+        let img: NSImage?
+        if url.pathExtension.lowercased() == "pdf" {
+            img = await Task.detached(priority: .utility) {
+                PDFDocument(url: url)?.page(at: 0)?.thumbnail(of: CGSize(width: 150, height: 200), for: .cropBox)
+            }.value
+        } else {
+            // Word, Pages… : l'aperçu que le Finder montrerait, sinon l'icône du fichier
+            let request = QLThumbnailGenerator.Request(fileAt: url, size: CGSize(width: 150, height: 200), scale: 2, representationTypes: .thumbnail)
+            if let rep = try? await QLThumbnailGenerator.shared.generateBestRepresentation(for: request) {
+                img = rep.nsImage
+            } else {
+                img = NSWorkspace.shared.icon(forFile: url.path)
+            }
+        }
         if let img { cache.setObject(img, forKey: url as NSURL) }
         return img
     }
@@ -191,6 +212,19 @@ struct ThumbnailView: View {
         .shadow(color: .black.opacity(0.12), radius: 2, y: 1)
         .task(id: url) { image = await Thumbnails.shared.image(for: url) }
         .accessibilityHidden(true)      // décoratif : le nom du fichier est déjà lu
+    }
+}
+
+/// Aperçu d'un document non PDF (Word, Pages…) comme dans le Finder.
+struct QuickLookPreview: NSViewRepresentable {
+    let url: URL
+    func makeNSView(context: Context) -> QLPreviewView {
+        let v = QLPreviewView(frame: .zero, style: .normal) ?? QLPreviewView()
+        v.previewItem = url as NSURL
+        return v
+    }
+    func updateNSView(_ v: QLPreviewView, context: Context) {
+        if (v.previewItem as? NSURL) != (url as NSURL) { v.previewItem = url as NSURL }
     }
 }
 
@@ -249,7 +283,27 @@ struct PDFKitView: NSViewRepresentable {
 
 // MARK: - Vue
 
+/// Progression de la lecture du contenu des cours (objet à part : voir `LibraryModel.indexStatus`).
+@MainActor
+final class LibraryIndexStatus: ObservableObject {
+    @Published var progress: (done: Int, total: Int)?
+}
+
+/// Laisse passer au plus une mise à jour toutes les 500 ms (appelé depuis le fil d'indexation).
+final class IndexProgressLimiter: @unchecked Sendable {
+    private let verrou = NSLock()
+    private var dernier = Date.distantPast
+    func laisserPasser() -> Bool {
+        verrou.lock(); defer { verrou.unlock() }
+        let maintenant = Date()
+        guard maintenant.timeIntervalSince(dernier) >= 0.5 else { return false }
+        dernier = maintenant
+        return true
+    }
+}
+
 struct LibraryView: View {
+    @ObservedObject private var indexStatus = LibraryModel.shared.indexStatus
     @ObservedObject private var library = LibraryModel.shared
     @ObservedObject private var intake = IntakeModel.shared
     @State private var search = ""
@@ -280,7 +334,7 @@ struct LibraryView: View {
             header
             if let b = history.banner { MoveBanner(count: b.count).padding(.horizontal, 20).padding(.bottom, 8) }
             if let notice = intake.notice { intakeBanner(notice) }
-            if let problem = library.problem, library.files.isEmpty {
+            if let problem = library.problem, library.files.isEmpty, library.documents.isEmpty {
                 VStack(spacing: 12) {
                     Image(systemName: "folder.badge.questionmark").font(.system(size: 40)).foregroundStyle(.secondary)
                     Text(problem).multilineTextAlignment(.center)
@@ -296,7 +350,7 @@ struct LibraryView: View {
             }
         }
         .background(Color(nsColor: .windowBackgroundColor))
-        .onAppear { if library.files.isEmpty { library.refresh() } }
+        .onAppear { if library.files.isEmpty && library.documents.isEmpty { library.refresh() } }
         .sheet(isPresented: $showAnalysis) { AnalysisSheet() }
         .sheet(isPresented: $showHistory) { MoveHistorySheet() }
         .sheet(isPresented: $showArchive) { ArchiveSheet() }
@@ -332,7 +386,7 @@ struct LibraryView: View {
                     }
                     .padding(.horizontal, 14).padding(.vertical, 10)
                 }
-                .overlay { if library.isScanning && library.files.isEmpty { ProgressView("Recherche des cours…") } }
+                .overlay { if library.isScanning && library.files.isEmpty && library.documents.isEmpty { ProgressView("Recherche des cours…") } }
             }
         }
     }
@@ -354,7 +408,7 @@ struct LibraryView: View {
         }
         if let p = library.indexProgress {
             Text("Les cours encore en lecture (\(p.done)/\(p.total)) peuvent manquer dans ces résultats.")
-                .font(.caption).foregroundStyle(.tertiary).padding(.horizontal, 10).padding(.top, 8)
+                .font(.caption).foregroundStyle(.secondary).padding(.horizontal, 10).padding(.top, 8)
         }
     }
 
@@ -366,7 +420,7 @@ struct LibraryView: View {
                 VStack(spacing: 10) {
                     Image(systemName: "doc.text.magnifyingglass").font(.system(size: 44, weight: .light)).foregroundStyle(.tertiary)
                     Text("Choisis un cours pour le voir ici").foregroundStyle(.secondary)
-                    Text("Glisse un PDF sur la fenêtre pour l'ajouter et le ranger.").font(.caption).foregroundStyle(.tertiary)
+                    Text("Glisse un PDF sur la fenêtre pour l'ajouter et le ranger.").font(.caption).foregroundStyle(.secondary)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(Color(nsColor: .underPageBackgroundColor))
@@ -381,6 +435,7 @@ struct LibraryView: View {
             Spacer()
             if !intake.busy, intake.lastMove != nil { Button("Annuler le rangement") { intake.undo() } }
             Button { intake.notice = nil } label: { Image(systemName: "xmark") }.buttonStyle(.plain)
+                .accessibilityLabel("Masquer le message")
         }
         .padding(10).background(Color.accentColor.opacity(0.12))
     }
@@ -390,12 +445,12 @@ struct LibraryView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text("Mes cours").font(.system(size: 26, weight: .bold, design: .rounded))
                 HStack(spacing: 8) {
-                    Text("\(library.files.count) PDF · \((library.root.path as NSString).abbreviatingWithTildeInPath)")
+                    Text("\(library.files.count) PDF\(library.documents.isEmpty ? "" : " · \(library.documents.count) document\(library.documents.count > 1 ? "s" : "")") · \((library.root.path as NSString).abbreviatingWithTildeInPath)")
                         .font(.caption).foregroundStyle(.secondary).lineLimit(1)
                     if let p = library.indexProgress {
                         HStack(spacing: 4) {
                             ProgressView().controlSize(.mini)
-                            Text("Indexation \(p.done)/\(p.total)").font(.caption).monospacedDigit().foregroundStyle(.tertiary)
+                            Text("Indexation \(p.done)/\(p.total)").font(.caption).monospacedDigit().foregroundStyle(.secondary)
                         }
                         .help("L'app lit le texte de tes cours pour que tu puisses chercher un mot dedans. Tout reste sur ton Mac.")
                     }
@@ -412,6 +467,15 @@ struct LibraryView: View {
             Button { intake.chooseFiles() } label: { Label("Ajouter", systemImage: "plus") }
                 .buttonStyle(.borderedProminent).controlSize(.large)
                 .help("Ajouter un nouveau cours : il est lu puis rangé automatiquement (tu peux aussi le déposer ici)")
+            Menu {
+                Button("Mettre à jour d'après Claude (voir les propositions)") { AnalysisModel.shared.miseAJourDemandee = .voir; showAnalysis = true }
+                Button("Mettre à jour et tout appliquer (annulable)") { AnalysisModel.shared.miseAJourDemandee = .appliquer; showAnalysis = true }
+                Divider()
+                Button("Tout relire avec Claude") { AnalysisModel.shared.miseAJourDemandee = .toutRelire; showAnalysis = true }
+                Button("Actualiser l'arbre depuis le disque") { library.refresh() }
+            } label: { Label("Mettre à jour", systemImage: "arrow.triangle.2.circlepath") }
+                .menuStyle(.borderlessButton).fixedSize().controlSize(.large)
+                .help("Remet l'arbre de tes cours à jour d'après l'IA : voir ses propositions, tout appliquer d'un coup, ou tout relire")
             Button { showAnalysis = true } label: { Label("Analyser", systemImage: "sparkle.magnifyingglass") }
                 .buttonStyle(.bordered).controlSize(.large)
                 .help("Lire tous les cours pour proposer de les réorganiser ou de les compléter")
@@ -439,6 +503,7 @@ struct LibraryView: View {
                 Button("Changer le dossier des cours…") { library.chooseRoot() }
             } label: { Image(systemName: "ellipsis.circle") }
             .menuStyle(.borderlessButton).fixedSize().controlSize(.large)
+            .accessibilityLabel("Plus d'options")
         }
         .padding(.horizontal, 20).padding(.vertical, 14)
         .background(LinearGradient(colors: [Color.accentColor.opacity(0.10), .clear], startPoint: .topLeading, endPoint: .bottomTrailing))
@@ -502,6 +567,24 @@ private struct StateTags: View {
 }
 
 extension LibraryModel {
+    /// Compléter / faire une fiche d'un document Word : il est converti en PDF à côté (l'original reste intact), puis
+    /// le PDF suit le chemin habituel.
+    func useAsPDF(_ file: LibraryFile, then action: @escaping (URL) -> Void) {
+        guard !file.isPDF else { action(file.url); return }
+        Task {
+            do {
+                let pdf = try await DocumentConverter.pdf(for: file.url)
+                refresh()
+                action(pdf)
+            } catch {
+                let alert = NSAlert()
+                alert.messageText = "Impossible de convertir « \(file.name) »"
+                alert.informativeText = error.localizedDescription
+                alert.runModal()
+            }
+        }
+    }
+
     /// Proposer « Compléter » : le nom le dit vierge, ou la dernière analyse a trouvé des trous restants.
     func canComplete(_ file: LibraryFile) -> Bool {
         file.state == .vierge || digest(for: file)?.needsCompletion == true
@@ -543,9 +626,14 @@ private struct FileRowView: View {
         .accessibilityAction(named: "Ouvrir") { openByDefault() }
         .accessibilityAction(named: "Sélectionner") { library.select(file) }
         .contextMenu {
-            if !file.isEvaluation { Button("Compléter le cours") { Recents.shared.touch(file.url); navigator.complete(file.url) } }
-            if !file.isEvaluation { Button("Fiche de révision") { Recents.shared.touch(file.url); navigator.makeSheet(file.url) } }
-            Button("Corrigé d'évaluation (après la note)") { Recents.shared.touch(file.url); navigator.correct(file.url) }
+            if !file.isPDF {
+                Button("Compléter le cours") { library.useAsPDF(file) { navigator.complete($0) } }
+                Button("Fiche de révision") { library.useAsPDF(file) { navigator.makeSheet($0) } }
+                Button("Ouvrir dans son application") { NSWorkspace.shared.open(file.url) }
+            }
+            if file.isPDF && !file.isEvaluation { Button("Compléter le cours") { Recents.shared.touch(file.url); navigator.complete(file.url) } }
+            if file.isPDF && !file.isEvaluation { Button("Fiche de révision") { Recents.shared.touch(file.url); navigator.makeSheet(file.url) } }
+            if file.isPDF { Button("Corrigé d'évaluation (après la note)") { Recents.shared.touch(file.url); navigator.correct(file.url) } }
             Divider()
             Button("Afficher dans le Finder") { NSWorkspace.shared.activateFileViewerSelecting([file.url]) }
         }
@@ -553,7 +641,11 @@ private struct FileRowView: View {
 
     @ViewBuilder private var actions: some View {
         HStack(spacing: 6) {
-            if file.isEvaluation {
+            if !file.isPDF {
+                Button("Compléter") { library.useAsPDF(file) { navigator.complete($0) } }.buttonStyle(.borderedProminent)
+                Button("Fiche") { library.useAsPDF(file) { navigator.makeSheet($0) } }.buttonStyle(.bordered)
+                Button("Ouvrir") { Recents.shared.touch(file.url); NSWorkspace.shared.open(file.url) }.buttonStyle(.bordered)
+            } else if file.isEvaluation {
                 Button("Corriger") { Recents.shared.touch(file.url); navigator.correct(file.url) }.buttonStyle(.borderedProminent)
             } else {
                 if library.canComplete(file) { Button("Compléter") { Recents.shared.touch(file.url); navigator.complete(file.url) }.buttonStyle(.borderedProminent) }
@@ -565,7 +657,8 @@ private struct FileRowView: View {
 
     private func openByDefault() {
         Recents.shared.touch(file.url)
-        if file.isEvaluation { navigator.correct(file.url) }
+        if !file.isPDF { NSWorkspace.shared.open(file.url) }
+        else if file.isEvaluation { navigator.correct(file.url) }
         else if library.canComplete(file) { navigator.complete(file.url) }
         else { navigator.makeSheet(file.url) }
     }
@@ -585,7 +678,11 @@ private struct DocumentPreview: View {
                 HStack(spacing: 6) {
                     StateTags(file: file)
                     Spacer()
-                    if file.isEvaluation {
+                    if !file.isPDF {
+                        Button("Compléter") { library.useAsPDF(file) { navigator.complete($0) } }.buttonStyle(.borderedProminent)
+                        Button("Fiche") { library.useAsPDF(file) { navigator.makeSheet($0) } }.buttonStyle(.bordered)
+                        Button("Ouvrir") { Recents.shared.touch(file.url); NSWorkspace.shared.open(file.url) }.buttonStyle(.bordered)
+                    } else if file.isEvaluation {
                         Button("Corriger") { Recents.shared.touch(file.url); navigator.correct(file.url) }.buttonStyle(.borderedProminent)
                     } else {
                         if library.canComplete(file) { Button("Compléter") { Recents.shared.touch(file.url); navigator.complete(file.url) }.buttonStyle(.borderedProminent) }
@@ -593,12 +690,17 @@ private struct DocumentPreview: View {
                     }
                     Button { NSWorkspace.shared.activateFileViewerSelecting([file.url]) } label: { Image(systemName: "folder") }
                         .help("Afficher dans le Finder")
+                        .accessibilityLabel("Afficher dans le Finder")
                 }
                 .controlSize(.regular)
             }
             .padding(14)
             Divider()
-            PDFKitView(url: file.url, focus: LibraryModel.shared.focus).id(file.url)
+            if file.isPDF {
+                PDFKitView(url: file.url, focus: LibraryModel.shared.focus).id(file.url)
+            } else {
+                QuickLookPreview(url: file.url).id(file.url)
+            }
         }
     }
 }
@@ -619,7 +721,7 @@ private struct RecentsSection: View {
                     Text("Reprendre où tu étais").font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
                     Spacer()
                     Button("Effacer") { recents.clear() }
-                        .buttonStyle(.plain).font(.caption).foregroundStyle(.tertiary)
+                        .buttonStyle(.plain).font(.caption).foregroundStyle(.secondary)
                         .help("Vider la liste des derniers cours ouverts (aucun fichier n'est touché)")
                 }
                 ScrollView(.horizontal, showsIndicators: false) {
@@ -688,7 +790,7 @@ private struct ContentHitRow: View {
                         Text("page \(hit.page)").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                             .padding(.horizontal, 6).padding(.vertical, 1).background(.quaternary, in: Capsule())
                     }
-                    Text(file.folders.joined(separator: " › ")).font(.caption2).foregroundStyle(.tertiary).lineLimit(1)
+                    Text(file.folders.joined(separator: " › ")).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
                     Text(excerpt).font(.caption).foregroundStyle(.secondary).lineLimit(3)
                 }
                 Spacer(minLength: 0)

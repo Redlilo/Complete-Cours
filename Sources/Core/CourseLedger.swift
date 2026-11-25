@@ -34,6 +34,17 @@ enum UndoOutcome: Equatable {
     case refused(String)        // raison, en français ; rien n'a été touché
 }
 
+/// Données de l'app sur le disque : dossier lisible par l'utilisateur seul (0700), fichiers en 0600.
+enum PrivateFiles {
+    static func write(_ data: Data, to url: URL) throws {
+        let fm = FileManager.default, dir = url.deletingLastPathComponent()
+        try fm.createDirectory(at: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        try? fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: dir.path)
+        try data.write(to: url, options: .atomic)
+        try? fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+    }
+}
+
 final class CourseLedger: @unchecked Sendable {
     static let shared = CourseLedger(directory: CourseLedger.defaultDirectory)
 
@@ -110,8 +121,7 @@ final class CourseLedger: @unchecked Sendable {
         if readOnly { lastSaveError = "Le journal existe mais n'est pas lisible : il n'est pas modifié."; return }
         let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .iso8601; encoder.outputFormatting = [.sortedKeys]
         do {
-            try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try encoder.encode(store).write(to: fileURL, options: .atomic)
+            try PrivateFiles.write(try encoder.encode(store), to: fileURL)
             lastSaveError = nil
         } catch { lastSaveError = error.localizedDescription }
     }

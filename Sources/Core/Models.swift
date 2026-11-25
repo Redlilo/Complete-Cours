@@ -9,6 +9,8 @@ enum ZoneKind: String, Codable, CaseIterable, Identifiable {
     case definition
     case question
     case ignorer
+    /// Zone marquée par l'élève : un schéma électrique dessiné par Claude Opus 5.5 (jamais du texte, jamais deviné par l'IA).
+    case schema
 
     var id: String { rawValue }
 
@@ -18,8 +20,12 @@ enum ZoneKind: String, Codable, CaseIterable, Identifiable {
         case .definition: return "Définition"
         case .question: return "Question ouverte"
         case .ignorer: return "Ignorer"
+        case .schema: return "Schéma électrique"
         }
     }
+
+    /// Pictogramme SF Symbols du type, s'il en a un.
+    var symbolName: String? { self == .schema ? "bolt.horizontal" : nil }
 
     var isHumanizable: Bool { self == .question }
 }
@@ -69,6 +75,8 @@ struct Zone: Identifiable {
     var enabled = true
     var overflow = false                // le texte ne rentre pas entièrement
     var error: String? = nil            // message d'erreur propre à cette zone (affiché dans la liste)
+    /// Schéma dessiné (seulement pour `kind == .schema`) : symboles normalisés placés sur une grille, rendus en vectoriel.
+    var schema: SchemaElectrique? = nil
     var textHeight: CGFloat = 11        // corps du texte voisin (pour choisir la taille d'écriture)
     /// À quel point on est sûr que c'est un vrai trou à remplir (0 : douteux, 1 : sûr). Rempli par le détecteur.
     var confidence: Double = 1
@@ -95,6 +103,9 @@ struct Zone: Identifiable {
         let rows = max(1, Int((b.height - 3) / 11))
         return max(2, rows * Int(max(0, b.width - 4) / cw))
     }
+
+    /// La zone est-elle déjà remplie ? (une réponse écrite, ou un schéma dessiné pour une zone schéma)
+    var isFilled: Bool { kind == .schema ? schema != nil : !answer.isEmpty }
 
     /// Phrase de contexte pour l'affichage dans la liste.
     var shortContext: String {

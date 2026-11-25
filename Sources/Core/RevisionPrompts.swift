@@ -282,7 +282,7 @@ enum RevisionPrompts {
             s += "Numéro \(it.number) (\(it.style.label))\n"
             s += "Question : \(sanitize(it.question))\n"
             s += "Réponse attendue : \(sanitize(it.expected))\n"
-            s += "Réponse de l'élève : \(sanitize(it.answer))\n\n"
+            s += "Réponse de l'élève : \(sanitize(String(it.answer.prefix(4_000))))\n\n"
         }
         s += "</reponses>"
         return s

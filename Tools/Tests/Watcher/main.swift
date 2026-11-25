@@ -272,6 +272,18 @@ do {
     let r8 = await AutoIntakeProcessor.process(a, watchedFolder: downloads, root: root, ledger: ledger, generator: noProp)
     check({ if case .failed = r8 { return true }; return false }() && fm.fileExists(atPath: a.path), "sans proposition : le fichier reste en place et n'est pas renvoyé à l'IA à chaque lancement")
 
+    // « Chantier 7 » : sans l'option « Créer un dossier », aucun dossier n'est créé ; avec, il l'est
+    let c7 = downloads.appendingPathComponent("Chantier7.pdf"); makeTextPDF(c7, text: "chantier sept")
+    let ai7 = FakeAI(reply("Maths/Chantier 7 - Titre", file: "Chantier7.pdf"))
+    let r10 = await AutoIntakeProcessor.process(c7, watchedFolder: downloads, root: root, ledger: ledger, generator: ai7)
+    check({ if case .failed = r10 { return true }; return false }() && fm.fileExists(atPath: c7.path)
+          && !fm.fileExists(atPath: root.appendingPathComponent("Maths/Chantier 7 - Titre").path), "sans option : aucun dossier créé, le fichier reste en place")
+    let r11 = await AutoIntakeProcessor.process(c7, watchedFolder: downloads, root: root, ledger: ledger, generator: ai7, creerDossiers: true)
+    check({ if case .filed = r11 { return true }; return false }() && fm.fileExists(atPath: root.appendingPathComponent("Maths/Chantier 7 - Titre/Chantier7.pdf").path), "avec option : sous-dossier créé")
+    // déplacer un fichier disparu : erreur claire, pas de faux succès
+    do { _ = try CourseAnalysis.move(AnalysisSuggestion(path: "Maths/Cours/disparu.pdf", folder: "Maths/Cours", newName: "", reason: ""), root: root); check(false, "fichier disparu : aurait dû échouer") }
+    catch { check(true, "fichier disparu : erreur") }
+
     // garde-fou : fichier hors du dossier surveillé
     let outside = freshDir("dehors").appendingPathComponent("Hors.pdf"); makeTextPDF(outside, text: "x")
     let r9 = await AutoIntakeProcessor.process(outside, watchedFolder: downloads, root: root, ledger: ledger, generator: ai)

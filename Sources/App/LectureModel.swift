@@ -24,6 +24,19 @@ final class LectureModel: ObservableObject {
     @Published private(set) var installationVoix: Installation = .repos
     @Published private(set) var journalInstallation = ""
 
+    // Direct : affichage seulement, rien n'est écrit sur le disque ni dans la base.
+    @Published private(set) var directFinal: [String] = []
+    @Published private(set) var directProvisoire: String = ""
+    @Published private(set) var analyseDirect: LectureAnalyseDirect?
+    @Published private(set) var analyseDirectEnCours = false
+    @Published private(set) var erreurDirect: String? { didSet { if let e = erreurDirect { BugJournal.shared.noter("Écoute en direct", e) } } }
+    @Published var analyseDirecteActive: Bool = (UserDefaults.standard.object(forKey: "lecture.analyseDirecte") as? Bool) ?? true {
+        didSet { UserDefaults.standard.set(analyseDirecteActive, forKey: "lecture.analyseDirecte") }
+    }
+    private var direct = LectureDirect()
+    private var derniereAnalyse = Date()
+    private var caracteresAnalyses = 0
+
     private let store: LectureStore
     private let enregistreur = LectureRecorder()
     private var coursEnCours: UUID?
@@ -31,7 +44,11 @@ final class LectureModel: ObservableObject {
     private var chrono: Timer?
     private var dernierSon = Date()
     private var niveauMax: Float = 0
-    private var morceauxEnCours = 0
+    /// Morceaux en cours de transcription, par cours (un morceau en retard ne se mélange jamais à un autre cours).
+    private let attente = LectureAttente()
+    private var analyseSerie: LectureAnalyseSerie?
+    private var dossiersEnSursis: [UUID: URL] = [:]
+    private var finEnCours: Task<Void, Never>?
     private var enTraitement: Set<UUID> = []
     private var limiteJusqua = Date.distantPast
     /// Réessai automatique des cours en attente (limite atteinte ou pas de connexion).
@@ -46,6 +63,7 @@ final class LectureModel: ObservableObject {
         base = b
         store.sauver(b)
         enregistreur.onNiveau = { [weak self] n in Task { @MainActor in self?.recevoirNiveau(n) } }
+        enregistreur.onMicro = { [weak self] m, _ in Task { @MainActor in self?.message = m } }
         enregistreur.onMorceau = { [weak self] url, decalage in Task { @MainActor in self?.recevoirMorceau(url, decalage: decalage) } }
     }
 
@@ -67,7 +85,9 @@ final class LectureModel: ObservableObject {
 
     private func modifier(_ id: UUID, _ f: (inout LectureCours) -> Void) {
         guard let i = base.cours.firstIndex(where: { $0.id == id }) else { return }
+        let avant = base.cours[i].erreur
         f(&base.cours[i])
+        if let e = base.cours[i].erreur, e != avant { BugJournal.shared.noter("Écoute (cours)", e) }
         sauver()
     }
 
@@ -89,7 +109,7 @@ final class LectureModel: ObservableObject {
     // MARK: Écoute
 
     func demarrer(matiere: String, prof: String, titre: String) {
-        guard etat == .repos else { return }
+        guard etat == .repos, !demarrageEnCours else { return }
         guard let p = base.reglages.profs.first(where: { $0.nom == prof }), p.accord else {
             message = "Coche d'abord « J'ai l'accord de ce prof » dans les Réglages de cette partie."
             return
@@ -98,11 +118,14 @@ final class LectureModel: ObservableObject {
         let t = titre.trimmingCharacters(in: .whitespaces)
         let dossier = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("ecoute-\(id.uuidString)", isDirectory: true)
         message = nil
+        demarrageEnCours = true
         Task {
+            defer { demarrageEnCours = false }
             do {
                 try await enregistreur.demarrer(dossier: dossier, secondesParMorceau: Double(base.reglages.minutesParMorceau) * 60)
             } catch {
                 message = error.localizedDescription
+                BugJournal.shared.noter("Écoute", error.localizedDescription)
                 return
             }
             let jour = Date().formatted(.dateTime.day().month(.twoDigits))
@@ -114,6 +137,103 @@ final class LectureModel: ObservableObject {
             chrono = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
                 Task { @MainActor in self?.tic() }
             }
+            demarrerLeDirect()
+        }
+    }
+
+    private var generationDirect = 0
+    /// Évite deux démarrages d'écoute si on clique deux fois avant que le micro soit prêt.
+    private var demarrageEnCours = false
+
+    private func demarrerLeDirect() {
+        directFinal = []; directProvisoire = ""; analyseDirect = nil; analyseDirectEnCours = false; erreurDirect = nil
+        derniereAnalyse = Date(); caracteresAnalyses = 0
+        generationDirect += 1
+        let generation = generationDirect
+        analyseSerie?.reinitialiser()
+        analyseSerie = LectureAnalyseSerie(
+            aAnalyser: { [weak self] in
+                guard let self, generation == self.generationDirect else { return false }
+                return !self.directFinal.joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            },
+            executer: { [weak self] in await self?.analyserDirect(generation: generation) })
+        let d = LectureDirect()
+        direct = d
+        enregistreur.onBuffer = { [weak d] buf in d?.ajouter(buf) }   // le début est gardé en mémoire jusqu'à ce que le moteur soit prêt
+        d.onTexte = { [weak self, weak d] texte, definitif in
+            Task { @MainActor in
+                guard let self, let d, self.direct === d else { return }
+                if definitif {
+                    let t = LectureTexte.nettoyerTexte(LectureTexte.corriger(texte, reglages: self.base.reglages))
+                    if !t.isEmpty { self.directFinal.append(t) }
+                    self.directProvisoire = ""
+                } else {
+                    self.directProvisoire = texte
+                }
+            }
+        }
+        d.onErreur = { [weak self, weak d] m in
+            Task { @MainActor in
+                guard let self, let d, self.direct === d else { return }
+                self.erreurDirect = m
+            }
+        }
+        Task {
+            do {
+                try await d.demarrer(vocabulaire: vocabulaireDuCours())
+                // Cours déjà terminé (ou autre cours lancé) pendant le démarrage : on referme ce direct, sinon il resterait ouvert.
+                guard direct === d, enregistre else { await d.arreter(); return }
+                enregistreur.onBuffer = { [weak d] buf in d?.ajouter(buf) }
+            } catch {
+                if direct === d { erreurDirect = error.localizedDescription }
+            }
+        }
+    }
+
+    // MARK: Analyse en direct
+
+    /// Termes du cours (lexique, matière, prénoms, prof) donnés au moteur de dictée pour mieux reconnaître le vocabulaire.
+    private func vocabulaireDuCours() -> [String] {
+        let c = coursEnCours.flatMap { cours($0) }
+        return LectureVocabulaire.contextualStrings(reglages: base.reglages, matiere: c?.matiere ?? "", prof: c?.prof ?? "")
+    }
+
+    private var texteDirectPourIA: String {
+        let prof = coursEnCours.flatMap { cours($0)?.prof } ?? ""
+        let t = LecturePipeline.retirerPrenomsEtCorriger(directFinal.joined(separator: " "), base.reglages, prof: prof)
+        return String(t.suffix(14000))
+    }
+
+    /// Lance une analyse tout de suite (ignorée si déjà en cours ou rien à analyser).
+    func analyserMaintenant() { analyseSerie?.demander() }
+
+    /// Corps d'une analyse (lancé par `analyseSerie`, une à la fois) : un résultat qui arrive après le début d'un autre cours est ignoré.
+    private func analyserDirect(generation: Int) async {
+        guard generation == generationDirect else { return }
+        let brut = directFinal.joined(separator: " ")
+        let texte = texteDirectPourIA
+        let precedente = analyseDirect
+        analyseDirectEnCours = true
+        derniereAnalyse = Date()
+        caracteresAnalyses = brut.count
+        defer { if generation == generationDirect { analyseDirectEnCours = false } }
+        do {
+                // Modèle léger pour l'analyse en direct (appels fréquents) ; la fiche finale garde le modèle de tes Réglages.
+                var reglagesIA = RunSettings.current()
+                if reglagesIA.engine == .claudeCode { reglagesIA.claudeCodeModel = "haiku"; reglagesIA.claudeCodeEffort = "low" }
+                else if reglagesIA.engine == .claude { reglagesIA.claudeModel = "claude-haiku-5-5" }
+                let moteur = try EngineFactory.make(reglagesIA)
+                guard let g = moteur as? StructuredGenerator else {
+                    throw LectureErreur.transcription("ce moteur ne sait pas analyser en direct : choisis-en un autre dans les Réglages")
+                }
+                let json = try await g.generate(system: LectureAnalyseDirectPrompts.systeme,
+                                                userText: LectureAnalyseDirectPrompts.message(transcription: texte, precedente: precedente),
+                                                images: [], schema: LectureAnalyseDirectPrompts.schema)
+                guard generation == generationDirect else { return }
+                if let a = LectureAnalyseDirect.depuis(json: json) { analyseDirect = a; erreurDirect = nil }
+                else { erreurDirect = "L'analyse en direct n'a pas pu être lue : nouvel essai bientôt." }
+        } catch {
+            if generation == generationDirect { erreurDirect = error.localizedDescription }
         }
     }
 
@@ -129,13 +249,34 @@ final class LectureModel: ObservableObject {
         guard enregistre else { return }
         chrono?.invalidate(); chrono = nil
         etat = .termine
-        enregistreur.arreter()
-        Task { try? await Task.sleep(for: .milliseconds(600)); finaliserSiPret() }
+        enregistreur.arreter()          // livre le dernier morceau (onMorceau) avant de rendre la main
+        enregistreur.onBuffer = nil
+        let d = direct
+        let serie = analyseSerie
+        guard let id = coursEnCours else { return }
+        finEnCours?.cancel()
+        finEnCours = Task {
+            await d.arreter()
+            try? await Task.sleep(for: .milliseconds(250))   // laisse arriver les derniers textes définitifs et le dernier morceau
+            directProvisoire = ""
+            // Analyse finale : si une analyse tourne déjà, elle repart juste après au lieu d'être sautée.
+            if analyseDirecteActive { serie?.demanderFinale() }
+            // Les derniers morceaux déjà enregistrés sont transcrits avant de clore le cours (délai maximal : on ne bloque jamais).
+            let fini = await attente.attendreFin(id, delaiMax: LectureFin.delaiMaxMorceaux)
+            if !fini {
+                message = "Certains morceaux d'audio sont encore en cours de transcription : le texte sera complété tout seul à leur arrivée."
+            }
+            finaliserSiPret(force: !fini)
+        }
     }
 
     private func tic() {
         guard etat == .ecoute else { return }
         duree += 1
+        if analyseDirecteActive, !analyseDirectEnCours, Date().timeIntervalSince(derniereAnalyse) >= 120,
+           directFinal.joined(separator: " ").count - caracteresAnalyses >= 350 {
+            analyseSerie?.demander()
+        }
         let r = base.reglages
         if Date().timeIntervalSince(dernierSon) > Double(r.minutesSilenceAvantArret) * 60 || duree > Double(r.minutesMaximum) * 60 {
             message = "L'écoute s'est arrêtée toute seule (silence prolongé ou durée maximale)."
@@ -150,23 +291,37 @@ final class LectureModel: ObservableObject {
     }
 
     private func recevoirMorceau(_ url: URL, decalage: Double) {
-        guard let id = coursEnCours else { try? FileManager.default.removeItem(at: url); return }
-        morceauxEnCours += 1
-        Task {
+        // Le morceau appartient au cours de son dossier, même s'il arrive après la fin du cours : il est transcrit, jamais jeté.
+        guard let id = LectureFin.cours(deMorceau: url) ?? coursEnCours, cours(id) != nil else {
+            try? FileManager.default.removeItem(at: url); return
+        }
+        attente.suivre(id, { [self] in
             do {
-                let mots = try await LectureTranscripteur.transcrire(url)
+                let c0 = cours(id)
+                let mots = try await LectureTranscripteur.transcrire(url, vocabulaire: LectureVocabulaire.contextualStrings(
+                    reglages: base.reglages, matiere: c0?.matiere ?? "", prof: c0?.prof ?? ""))
                 let r = base.reglages
-                var phrases = LectureTexte.phrases(depuis: mots, decalage: decalage)
+                // phrases coupées par une pause recollées, répétitions et phrases inventées retirées, puis fautes de vocabulaire corrigées
+                var phrases = LectureTexte.nettoyer(LectureTexte.recoller(LectureTexte.phrases(depuis: mots, decalage: decalage)))
                 for i in phrases.indices { phrases[i].texte = LectureTexte.corriger(phrases[i].texte, reglages: r) }
                 await reconnaitreLesVoix(&phrases, audio: url, decalage: decalage, cours: id)
-                modifier(id) { $0.phrases += phrases }
+                modifier(id) { $0.phrases = LectureTexte.inserer(phrases, dans: $0.phrases) }   // dans l'ordre du temps, phrase coupée entre deux morceaux recollée
             } catch {
                 modifier(id) { $0.erreur = error.localizedDescription }
             }
             try? FileManager.default.removeItem(at: url)   // l'audio est effacé dès que le texte existe
-            morceauxEnCours -= 1
-            finaliserSiPret()
+        }, apres: { [self] in
+            if coursEnCours == id { finaliserSiPret() } else { rattraperCours(id) }
+        })
+    }
+
+    /// Un morceau est arrivé après la fin du cours (délai dépassé) : le texte est ajouté à la fiche à relire, puis le dossier audio est effacé.
+    private func rattraperCours(_ id: UUID) {
+        guard attente.nombre(id) == 0 else { return }
+        modifier(id) { c in
+            if !c.phrases.isEmpty, c.statut == .erreur { c.statut = .aRelire; c.erreur = nil }
         }
+        if let d = dossiersEnSursis.removeValue(forKey: id) { try? FileManager.default.removeItem(at: d) }
     }
 
     /// Calcule l'empreinte de chaque phrase (le temps de ce morceau) et, si la voix du prof est déjà connue, dit qui parle.
@@ -180,7 +335,7 @@ final class LectureModel: ObservableObject {
                 return try LectureVoix.empreintes(wav: wav, segments: segments)
             }.value
             let profil = base.voix?[prof], lex = base.reglages.lexique
-            for (i, e) in emb.enumerated() {
+            for (i, e) in emb.enumerated() where i < phrases.count {
                 if let e { candidatsVoix[id, default: [:]][phrases[i].id] = e }
                 if let profil { etiqueter(&phrases[i], e, profil, lexique: lex) }
             }
@@ -284,8 +439,9 @@ final class LectureModel: ObservableObject {
         return ("Voix du prof pas encore apprise : elle sera retenue pendant ce premier cours.", .secondary)
     }
 
-    private func finaliserSiPret() {
-        guard etat == .termine, morceauxEnCours == 0, let id = coursEnCours else { return }
+    /// `force` : le délai d'attente est dépassé, on clôt avec ce qui est transcrit (les morceaux en retard seront ajoutés ensuite).
+    private func finaliserSiPret(force: Bool = false) {
+        guard etat == .termine, let id = coursEnCours, force || attente.nombre(id) == 0 else { return }
         apprendreLaVoix(id)
         let max = niveauMax
         modifier(id) { c in
@@ -296,7 +452,9 @@ final class LectureModel: ObservableObject {
             } else { c.statut = .aRelire; c.erreur = nil }
         }
         if cours(id)?.statut == .aRelire { aOuvrir = .relecture(id) }
-        if let d = dossierAudio { try? FileManager.default.removeItem(at: d) }
+        if let d = dossierAudio {
+            if attente.nombre(id) == 0 { try? FileManager.default.removeItem(at: d) } else { dossiersEnSursis[id] = d }
+        }
         coursEnCours = nil; dossierAudio = nil; etat = .repos; niveau = 0
     }
 

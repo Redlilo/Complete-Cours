@@ -32,6 +32,8 @@ enum AnswerCleaner {
     }
 
     static func clean(_ raw: String, kind: ZoneKind) -> String {
+        // un schéma n'est pas du texte : rien à nettoyer
+        if kind == .schema { return raw }
         var t = raw
         for z in ["\u{200B}", "\u{200C}", "\u{200D}", "\u{FEFF}", "\u{2060}"] { t = t.replacingOccurrences(of: z, with: "") }
         t = t.replacingOccurrences(of: "⟦[0-9]+⟧", with: "", options: .regularExpression)
@@ -226,27 +228,131 @@ enum CoursPipeline {
 
     /// Comme `analyze`, mais signale le problème : PDF introuvable, abîmé, protégé par mot de passe, sans page
     /// (`CoursError.message` en français), ou `CancellationError` si la Task qui l'appelle est annulée.
+    ///
+    /// Les pages sont analysées en parallèle (voir `maxAnalysisWorkers`) : chaque page ne dépend que d'elle-même
+    /// (et, pour les documents de 3 à 80 pages, du « décor » commun, calculé avant, une fois pour toutes). Les
+    /// identifiants de zones sont attribués ensuite, dans l'ordre des pages : le résultat est identique à une
+    /// analyse page après page. `progress` est appelé depuis le thread qui a appelé `analyzeChecked`.
     static func analyzeChecked(url: URL, needText: Bool, progress: (Double, String) -> Void) throws -> [PageAnalysis] {
         let doc = try openDocument(url)
-        var out: [PageAnalysis] = []
-        var nextID = 1
         let count = doc.pageCount
         let n = max(count, 1)
-        for i in 0..<count {
-            try Task.checkCancellation()
-            progress(Double(i) / Double(n), "Recherche des zones à remplir — page \(i + 1) sur \(count)")
+        try Task.checkCancellation()
+        let workers = analysisWorkerCount(pages: count)
+
+        /// Analyse de la page `i` avec un identifiant provisoire (renuméroté plus bas) ; nil si la page est illisible.
+        func analyzePage(_ d: PDFDocument, _ i: Int, decor: DecorIndex) -> PageAnalysis? {
             autoreleasepool {
-                guard let page = doc.page(at: i) else { return }
-                var a = ZoneDetector.analyze(page: page, index: i, firstID: nextID, needText: needText)
+                guard let page = d.page(at: i) else { return nil }
+                var a = ZoneDetector.analyze(page: page, index: i, firstID: 1, needText: needText, decor: decor)
                 // type proposé par les règles locales (déterministe) : l'IA le reçoit comme indication ou comme décision
                 for j in a.zones.indices { a.zones[j].kind = ZoneKindRules.propose(a.zones[j]).kind }
-                nextID += a.zones.count
-                out.append(a)
+                return a
             }
+        }
+
+        var results = [PageAnalysis?](repeating: nil, count: count)
+        if workers <= 1 {
+            let decor = DecorIndex.shared
+            for i in 0..<count {
+                try Task.checkCancellation()
+                progress(Double(i) / Double(n), "Recherche des zones à remplir — page \(i + 1) sur \(count)")
+                results[i] = analyzePage(doc, i, decor: decor)
+            }
+        } else {
+            // Documents de 3 à 80 pages : la détection visuelle de toutes les pages est faite d'abord (en parallèle),
+            // dans un « décor » propre à cette analyse ; sinon (plus de 80 pages) chaque page est indépendante.
+            let usesDecor = count >= 3 && count <= DecorIndex.maxPages
+            let decor = usesDecor ? DecorIndex(shared: true) : DecorIndex.shared
+            let phases = usesDecor ? 2 : 1
+            let lock = NSLock()
+            if usesDecor {
+                try runParallel(url: url, firstDocument: doc, count: count, workers: workers,
+                                progress: { done in progress(Double(done) / Double(n * phases), "Recherche des zones à remplir — page \(min(done + 1, count)) sur \(count)") }) { d, i in
+                    autoreleasepool {
+                        guard let page = d.page(at: i), let (img, geo) = PageImaging.render(page: page, longEdge: 2000) else { return }
+                        let g = PageImaging.gray(img)
+                        let det = PixelDetector.detect(g, dpi: geo.pixelSize.width / (geo.displaySize.width / 72))
+                        decor.store(det, geometry: geo, page: page, index: i)
+                    }
+                }
+            }
+            let base = usesDecor ? count : 0
+            try runParallel(url: url, firstDocument: doc, count: count, workers: workers,
+                            progress: { done in progress(Double(base + done) / Double(n * phases), "Recherche des zones à remplir — page \(min(done + 1, count)) sur \(count)") }) { d, i in
+                let a = analyzePage(d, i, decor: decor)
+                lock.lock(); results[i] = a; lock.unlock()
+            }
+        }
+
+        var out: [PageAnalysis] = []
+        var nextID = 1
+        for i in 0..<count {
+            guard var a = results[i] else { continue }
+            // identifiants consécutifs sur tout le document, dans l'ordre des pages
+            if nextID != 1 { for j in a.zones.indices { a.zones[j].id += nextID - 1 } }
+            nextID += a.zones.count
+            out.append(a)
         }
         if out.isEmpty { throw CoursError.message("Les pages de ce PDF sont illisibles : le fichier est abîmé.") }
         progress(1, "Zones trouvées")
         return out
+    }
+
+    /// Nombre de pages analysées en même temps : borné pour garder la mémoire (≈ 100 Mo par page en cours) et la
+    /// réactivité du Mac. 1 (analyse séquentielle) pour les petits documents, où lancer des threads ne rapporte rien.
+    static var maxAnalysisWorkers: Int = {
+        if let s = ProcessInfo.processInfo.environment["COMPLETE_COURS_WORKERS"], let v = Int(s), v >= 1 { return min(v, 16) }
+        return max(1, min(6, ProcessInfo.processInfo.activeProcessorCount - 2))
+    }()
+
+    static func analysisWorkerCount(pages: Int) -> Int {
+        pages < 6 ? 1 : min(maxAnalysisWorkers, pages)
+    }
+
+    /// Distribution des pages `0..<count` à `workers` threads, chacun avec SA PROPRE copie du PDF (PDFKit n'est pas
+    /// fait pour qu'on rende en même temps les pages d'un même PDFDocument). Le thread appelant ne calcule rien :
+    /// il surveille l'annulation de sa Task et rapporte l'avancement. Lève `CancellationError` si la Task est annulée.
+    private static func runParallel(url: URL, firstDocument: PDFDocument, count: Int, workers: Int,
+                                    progress: (Int) -> Void, body: @escaping (PDFDocument, Int) -> Void) throws {
+        let state = PageJobs(count: count)
+        let group = DispatchGroup()
+        for w in 0..<workers {
+            group.enter()
+            let t = Thread {
+                defer { group.leave() }
+                guard let d = w == 0 ? firstDocument : (try? openDocument(url)) else { return }
+                while let i = state.take() {
+                    body(d, i)
+                    state.finish()
+                }
+            }
+            t.stackSize = 16 << 20
+            t.qualityOfService = .userInitiated
+            t.start()
+        }
+        var cancelled = false
+        while group.wait(timeout: .now() + .milliseconds(100)) == .timedOut {
+            if !cancelled && Task.isCancelled { cancelled = true; state.cancel() }
+            progress(state.doneCount)
+        }
+        if cancelled || Task.isCancelled { throw CancellationError() }
+    }
+
+    private final class PageJobs: @unchecked Sendable {
+        private let lock = NSLock()
+        private let count: Int
+        private var next = 0, done = 0, stopped = false
+        init(count: Int) { self.count = count }
+        func take() -> Int? {
+            lock.lock(); defer { lock.unlock() }
+            guard !stopped, next < count else { return nil }
+            next += 1
+            return next - 1
+        }
+        func finish() { lock.lock(); done += 1; lock.unlock() }
+        func cancel() { lock.lock(); stopped = true; lock.unlock() }
+        var doneCount: Int { lock.lock(); defer { lock.unlock() }; return done }
     }
 
     /// Identifiants des zones qui ont une erreur : à passer en `onlyZoneIDs` pour une reprise ciblée.
@@ -288,6 +394,8 @@ enum CoursPipeline {
 
         let userDecided = settings.userKindZoneIDs
         func requested(_ z: Zone) -> Bool {
+            // les zones schéma ne passent jamais par un moteur de texte : elles sont dessinées par `SchemaService` (Opus 5.5)
+            if z.kind == .schema { return false }
             // une zone que l'élève a ignorée reste ignorée, même dans une régénération ciblée
             if z.kind == .ignorer && userDecided.contains(z.id) { return false }
             if let only = onlyZoneIDs { return only.contains(z.id) }
@@ -447,7 +555,8 @@ enum CoursPipeline {
                     zones[z].rawAnswer = ""
                 } else {
                     // type décidé par une règle sûre ou par l'élève : l'IA ne le change pas
-                    let kind = lockedKinds[zones[z].id] ?? a.kind
+                    // (jamais « schéma » : seul l'élève marque une zone ainsi)
+                    let kind = lockedKinds[zones[z].id] ?? (a.kind == .schema ? zones[z].kind : a.kind)
                     let text = AnswerCleaner.clean(a.text, kind: kind)
                     zones[z].kind = kind
                     zones[z].enabled = !text.isEmpty

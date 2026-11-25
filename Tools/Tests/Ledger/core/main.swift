@@ -292,5 +292,24 @@ do {
     check(CourseDigest(path: "p", isEvaluation: false, excerpt: "", zones: 4, remaining: 1, isIncomplete: false).state == .complet, "1 trou isolé non incomplet : complet")
 }
 
+section("attaque : BugJournal et déplacement")
+do {
+    let u = fresh().appendingPathComponent("bugs.json")
+    let j = BugJournal(url: u)
+    DispatchQueue.concurrentPerform(iterations: 200) { i in j.noter("S\(i % 5)", "msg \(i)") }
+    check(j.toutes().count == 200, "écritures concurrentes : 200 lignes, obtenu \(j.toutes().count)")
+    write(u, "{corrompu")
+    check(j.toutes().isEmpty, "fichier corrompu : liste vide, sans plantage")
+    check(fm.fileExists(atPath: u.appendingPathExtension("corrompu").path), "fichier corrompu mis de côté (.corrompu)")
+    j.noter("a", "après corruption"); check(j.toutes().count == 1, "écriture possible après corruption")
+    let root = fresh()
+    write(root.appendingPathComponent("Maths/Cours/a.pdf"), "x")
+    do { _ = try CourseAnalysis.move(AnalysisSuggestion(path: "Maths/Cours/zz.pdf", folder: "Maths/Cours", newName: "", reason: ""), root: root); check(false, "source absente : aurait dû échouer") }
+    catch { check(true, "source absente : erreur") }
+    let long = AnalysisSuggestion(path: "Maths/Cours/a.pdf", folder: "Maths/" + String(repeating: "é", count: 200), newName: "", reason: "")
+    do { _ = try CourseAnalysis.move(long, root: root); check(false, "dossier de 400 octets : aurait dû échouer") } catch { check(true, "nom trop long : erreur propre") }
+    check(fm.fileExists(atPath: root.appendingPathComponent("Maths/Cours/a.pdf").path), "nom trop long : le fichier n'a pas bougé")
+}
+
 print("\nRésultat : \(passed) réussis, \(failed) échec(s)")
 exit(failed == 0 ? 0 : 1)

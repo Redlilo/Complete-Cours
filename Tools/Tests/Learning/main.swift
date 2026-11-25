@@ -168,5 +168,17 @@ do {
     try? FileManager.default.removeItem(at: dir)
 }
 
+// attaque : largeurs absurdes (NaN, infinie, énorme) : jamais de plantage
+do {
+    let dir = tempDir(), mem = ZoneLearning(directory: dir)
+    for w in [CGFloat.nan, .infinity, -.infinity, 1e300, -1e300] {
+        let z = zone(900, before: "Complète la phrase suivante avec le bon mot", width: w)
+        _ = mem.record(.confirm, for: z, documentName: "Cours Maths")
+        var zs = [z]; _ = mem.apply(to: &zs, documentName: "Cours Maths")
+    }
+    check(true, "largeurs NaN / infinie / énorme : pas de plantage")
+    try? FileManager.default.removeItem(at: dir)
+}
+
 print("\n\(total - failures)/\(total) contrôles réussis")
 exit(failures == 0 ? 0 : 1)

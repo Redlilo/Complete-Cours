@@ -86,7 +86,8 @@ final class AppleEngine: CompletionEngine {
 
         // 3. le modèle écrit la réponse
         switch zone.kind {
-        case .ignorer:
+        case .ignorer, .schema:
+            // une zone schéma n'est jamais envoyée à un moteur de texte (le pipeline l'exclut) : par prudence, rien n'est écrit
             return reply(.ignorer, "")
         case .mot:
             guard let w = try await Self.fillWord(input) else { return nil }

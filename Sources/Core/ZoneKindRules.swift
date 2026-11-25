@@ -126,7 +126,7 @@ enum ZoneTrust {
     static func isDoubtful(_ z: Zone) -> Bool { z.confidence < threshold }
 
     /// Zones douteuses encore actives (ni ignorées ni désactivées).
-    static func doubtfulCount(_ zones: [Zone]) -> Int { zones.filter { isDoubtful($0) && $0.kind != .ignorer }.count }
+    static func doubtfulCount(_ zones: [Zone]) -> Int { zones.filter { isDoubtful($0) && $0.kind != .ignorer && $0.kind != .schema }.count }
 
     /// Les douteuses d'abord (l'ordre d'origine est gardé à l'intérieur de chaque groupe).
     static func doubtfulFirst(_ zones: [Zone]) -> [Zone] {

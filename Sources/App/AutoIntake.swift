@@ -17,9 +17,12 @@ final class AutoIntake: NSObject, ObservableObject, UNUserNotificationCenterDele
     static let enabledKey = "autoIntakeEnabled"
     static let folderKey = "autoIntakeFolder"
     static let recentKey = "autoIntakeRecent"
+    static let creerDossiersKey = "autoIntakeCreerDossiers"
     nonisolated static let categoryID = "DEPOT_RANGE", undoActionID = "ANNULER"
 
     @Published private(set) var enabled: Bool
+    /// Si aucun dossier existant ne convient (ex. « Chantier 7 »), l'app crée le sous-dossier qu'il faut.
+    @Published var creerDossiers: Bool { didSet { defaults.set(creerDossiers, forKey: Self.creerDossiersKey) } }
     @Published private(set) var folder: URL
     @Published private(set) var status = ""
     @Published private(set) var waiting = 0
@@ -43,6 +46,7 @@ final class AutoIntake: NSObject, ObservableObject, UNUserNotificationCenterDele
 
     override init() {
         enabled = UserDefaults.standard.bool(forKey: Self.enabledKey)
+        creerDossiers = UserDefaults.standard.bool(forKey: Self.creerDossiersKey)
         if let p = UserDefaults.standard.string(forKey: Self.folderKey), !p.isEmpty { folder = URL(fileURLWithPath: p, isDirectory: true) }
         else { folder = Self.defaultFolder }
         super.init()
@@ -119,7 +123,7 @@ final class AutoIntake: NSObject, ObservableObject, UNUserNotificationCenterDele
     private func handle(_ url: URL) async -> IntakeOutcome {
         let generator = try? AnalysisEngine.generator()
         let result = await AutoIntakeProcessor.process(url, watchedFolder: folder, root: LibraryModel.shared.root,
-                                                       ledger: .shared, generator: generator)
+                                                       ledger: .shared, generator: generator, creerDossiers: creerDossiers)
         switch result {
         case .filed(let record, let target, let name):
             remember(record.id)
@@ -128,10 +132,13 @@ final class AutoIntake: NSObject, ObservableObject, UNUserNotificationCenterDele
             LibraryModel.shared.refresh()
             announce("« \(name) » rangé dans \(target.replacingOccurrences(of: "/", with: " › "))", moveID: record.id)
         case .unavailable:
+            BugJournal.shared.noter("Dépôt automatique", "Moteur IA indisponible : un PDF attend d'être rangé.")
             waiting = (watcher?.deferredCount ?? 0) + 1      // le fichier courant n'est pas encore compté par le surveillant
             let n = waiting
             announce("\(n) \(Fr.plural(n, "PDF attend", "PDF attendent")) d'être rangé\(n > 1 ? "s" : ""). Vérifie ton moteur d'IA dans les Réglages.", moveID: nil)
-        case .notACourse, .failed: break
+        case .failed(let m):
+            BugJournal.shared.noter("Dépôt automatique", m)
+        case .notACourse: break
         }
         refreshStatus()
         return result.outcome
@@ -248,6 +255,9 @@ struct AutoIntakeSheet: View {
                 Section {
                     Toggle("Ranger automatiquement mes nouveaux cours", isOn: Binding(get: { intake.enabled }, set: { intake.setEnabled($0) }))
                         .toggleStyle(.switch)
+                    Toggle("Créer un dossier si aucun ne convient (ex. Chantier 7)", isOn: Binding(get: { intake.creerDossiers }, set: { intake.creerDossiers = $0 }))
+                    Text("Un cours de « Atelier Professionnel » qui ne rentre dans aucun chantier existant reçoit son propre sous-dossier. Jamais de nouvelle matière.")
+                        .font(.caption).foregroundStyle(.secondary)
                     HStack {
                         Text("Dossier surveillé").foregroundStyle(.secondary)
                         Text(intake.folderLabel).font(.body.weight(.medium))
@@ -283,7 +293,7 @@ struct AutoIntakeSheet: View {
                                 Text(m.toURL.lastPathComponent).font(.body.weight(.medium)).lineLimit(2)
                                 Text("→ " + (m.toURL.deletingLastPathComponent().path as NSString).abbreviatingWithTildeInPath)
                                     .font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
-                                Text(Self.formatter.string(from: m.date)).font(.caption2).foregroundStyle(.tertiary)
+                                Text(Self.formatter.string(from: m.date)).font(.caption2).foregroundStyle(.secondary)
                             }
                             Spacer(minLength: 8)
                             Button("Annuler ce rangement") { intake.undo(m.id) }.controlSize(.small)
@@ -318,6 +328,7 @@ struct AutoIntakeBanner: View {
                 }
                 Button { intake.dismissBanner() } label: { Image(systemName: "xmark") }.buttonStyle(.plain).foregroundStyle(.white)
                     .help("Masquer")
+                    .accessibilityLabel("Masquer le message")
             }
             .padding(.horizontal, 14).padding(.vertical, 10)
             .background(Color.blue.gradient, in: RoundedRectangle(cornerRadius: 10))

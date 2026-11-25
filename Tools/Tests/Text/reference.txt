@@ -1,10 +1,10 @@
 SYNTHESE attendus=6 trouves=6 faux=0
 PAGE texte p1 total=6 formulaire=0 texte=5 ligne=0 cadre=1
 PAGE texte p2 total=3 formulaire=3 texte=0 ligne=0 cadre=0
-TEMPS texte ms=404
-PAGE tourne p1 total=0 formulaire=0 texte=0 ligne=0 cadre=0
-TEMPS tourne ms=0
+TEMPS texte ms=182
+PAGE tourne p1 total=1 formulaire=0 texte=0 ligne=0 cadre=1
+TEMPS tourne ms=98
 PAGE rognage p1 total=6 formulaire=0 texte=5 ligne=0 cadre=1
-TEMPS rognage ms=222
+TEMPS rognage ms=101
 PAGE vide p1 total=0 formulaire=0 texte=0 ligne=0 cadre=0
-TEMPS vide ms=201
+TEMPS vide ms=90

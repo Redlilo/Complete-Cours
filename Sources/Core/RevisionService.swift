@@ -227,7 +227,7 @@ final class RevisionService: RevisionProviding, @unchecked Sendable {
     static func mergeLocally(_ parts: [RevisionSummary], title: String) -> RevisionSummary {
         func uniq<T>(_ items: [T], key: (T) -> String) -> [T] {
             var seen = Set<String>(), out: [T] = []
-            for it in items where seen.insert(normalize(key(it))).inserted { out.append(it) }
+            for it in items where seen.insert(Self.key(key(it))).inserted { out.append(it) }
             return out
         }
         return RevisionSummary(
@@ -327,7 +327,7 @@ final class RevisionService: RevisionProviding, @unchecked Sendable {
         switch style {
         case .qcm:
             var seen = Set<String>()
-            choices = RevJSON.strings(d["choix"]).map(stripChoiceLetter).filter { seen.insert(normalize($0)).inserted }
+            choices = RevJSON.strings(d["choix"]).map(stripChoiceLetter).filter { !$0.isEmpty && seen.insert(key($0)).inserted }
             guard choices.count >= 3, let idx = matchChoice(expected, choices) else { return nil }
             var good = choices[idx]
             if choices.count > 4 {
@@ -338,7 +338,7 @@ final class RevisionService: RevisionProviding, @unchecked Sendable {
             } else if shuffle {
                 choices.shuffle()
             }
-            good = choices.first(where: { normalize($0) == normalize(good) }) ?? good
+            good = choices.first(where: { key($0) == key(good) }) ?? good
             expected = good
         case .vraiFaux:
             guard let tf = trueFalse(expected) else { return nil }
@@ -375,7 +375,7 @@ final class RevisionService: RevisionProviding, @unchecked Sendable {
 
         // sans doublons (même recto), dans l'ordre du cours, au plus `count`
         var seen = Set<String>(), all: [RevisionCard] = []
-        for c in results.flatMap({ $0 }) where seen.insert(Self.normalize(c.front)).inserted { all.append(c) }
+        for c in results.flatMap({ $0 }) where seen.insert(Self.key(c.front)).inserted { all.append(c) }
         if all.count > count { all = Array(all.prefix(count)) }
         guard !all.isEmpty else {
             throw EngineError.invalidResponse("L'IA n'a pas pu fabriquer de cartes exploitables avec ce document. Réessaie dans un instant.")
@@ -398,10 +398,18 @@ final class RevisionService: RevisionProviding, @unchecked Sendable {
         }
     }
 
+    /// Coupe un texte trop long à la fin d'un mot, avec « … » (jamais au milieu d'un mot).
+    static func cut(_ s: String, _ max: Int) -> String {
+        guard s.count > max else { return s }
+        var t = String(s.prefix(max))
+        if let i = t.lastIndex(where: { $0 == " " || $0 == "\n" }), t.distance(from: t.startIndex, to: i) > max / 2 { t = String(t[..<i]) }
+        return t.trimmingCharacters(in: .whitespacesAndNewlines) + "…"
+    }
+
     /// Valide une carte : recto et verso non vides (sinon nil) ; textes limités en longueur.
     static func parseCard(_ d: [String: Any], pageCount: Int) -> RevisionCard? {
-        let front = String(RevJSON.str(d["recto"]).prefix(300)), back = String(RevJSON.str(d["verso"]).prefix(600))
-        guard !front.isEmpty, !back.isEmpty, normalize(front) != normalize(back) else { return nil }
+        let front = cut(RevJSON.str(d["recto"]), 300), back = cut(RevJSON.str(d["verso"]), 600)
+        guard !front.isEmpty, !back.isEmpty, key(front) != key(back) else { return nil }
         let pg = RevJSON.int(d["page"]).flatMap { $0 >= 1 && $0 <= pageCount ? $0 : nil }
         return RevisionCard(id: 0, front: front, back: back, page: pg)
     }
@@ -465,7 +473,7 @@ final class RevisionService: RevisionProviding, @unchecked Sendable {
 
     static func verdict(_ s: String) -> Verdict? {
         let n = normalize(s)
-        if n.hasPrefix("part") { return .partiel }
+        if n.hasPrefix("part") || n.hasPrefix("incompl") || n.hasPrefix("moitie") { return .partiel }
         if n.hasPrefix("jus") || n.hasPrefix("corr") || n == "vrai" { return .juste }
         if n.hasPrefix("faux") || n.hasPrefix("inc") { return .faux }
         return nil
@@ -485,8 +493,8 @@ final class RevisionService: RevisionProviding, @unchecked Sendable {
                 correct = (g == want)
             } else {
                 // réponse recopiée avec d'autres mots autour : juste si elle contient le bon choix et aucun autre
-                let a = " " + normalize(answer) + " "
-                let hits = q.choices.indices.filter { !normalize(q.choices[$0]).isEmpty && a.contains(" " + normalize(q.choices[$0]) + " ") }
+                let a = " " + key(answer) + " "
+                let hits = q.choices.indices.filter { !key(q.choices[$0]).isEmpty && a.contains(" " + key(q.choices[$0]) + " ") }
                 if hits.count == 1 { correct = (hits[0] == want) } else { recognised = false }
             }
         }
@@ -684,6 +692,16 @@ final class RevisionService: RevisionProviding, @unchecked Sendable {
         return out.split(whereSeparator: { $0 == " " }).joined(separator: " ")
     }
 
+    /// Comme `normalize`, mais les signes de calcul comptent : « 3+4 » et « 3×4 » restent différents.
+    static func key(_ s: String) -> String {
+        let marks: [Character: String] = ["+": " plus ", "−": " moins ", "×": " fois ", "*": " fois ", "÷": " div ", "/": " sur ",
+                                          "=": " egal ", "<": " inf ", ">": " sup ", "%": " pct ", "^": " puiss ", "²": " carre ", "³": " cube ", "°": " deg "]
+        var t = ""
+        for ch in s { t += marks[ch] ?? String(ch) }
+        let n = normalize(t)
+        return n.isEmpty ? s.trimmingCharacters(in: .whitespacesAndNewlines) : n
+    }
+
     /// Retire « A) », « B. » ou « c - » au début d'un choix.
     static func stripChoiceLetter(_ s: String) -> String {
         let r = s.replacingOccurrences(of: "^\\s*\\(?[A-Da-d][\\)\\.:]\\s+", with: "", options: .regularExpression)
@@ -695,6 +713,8 @@ final class RevisionService: RevisionProviding, @unchecked Sendable {
         let n = normalize(answer)
         guard !n.isEmpty else { return nil }
         let normChoices = choices.map { normalize($0) }
+        let ka = key(answer)
+        if let i = choices.firstIndex(where: { key($0) == ka }) { return i }
         if let i = normChoices.firstIndex(of: n) { return i }
         let letters = ["a", "b", "c", "d", "e"]
         var token = n

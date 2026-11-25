@@ -114,7 +114,7 @@ enum VerificationPass {
         var jobs: [(analysis: PageAnalysis, zones: [Zone])] = []
         for a in analyses.sorted(by: { $0.pageIndex < $1.pageIndex }) {
             let pz = zones
-                .filter { $0.page == a.pageIndex && $0.kind != .ignorer }
+                .filter { $0.page == a.pageIndex && $0.kind != .ignorer && $0.kind != .schema }
                 .sorted { $0.number < $1.number }
             var i = 0
             while i < pz.count {

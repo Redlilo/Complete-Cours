@@ -6,6 +6,7 @@ enum AppMode: String, CaseIterable, Identifiable {
     case bibliotheque, completer, fiches, evaluations, ecouter
     #if COMPTE_PERSO
     case suiviMac   // « Suivi MacBook IA » : variante personnelle seulement
+    case atlas      // « Atlas des skills » : variante personnelle seulement
     #endif
 
     var id: String { rawValue }
@@ -19,6 +20,7 @@ enum AppMode: String, CaseIterable, Identifiable {
         case .ecouter: return "Écouter un cours"
         #if COMPTE_PERSO
         case .suiviMac: return "Suivi MacBook IA"
+        case .atlas: return "Atlas des skills"
         #endif
         }
     }
@@ -33,6 +35,7 @@ enum AppMode: String, CaseIterable, Identifiable {
         case .ecouter: return "Appuie, parle, la fiche arrive"
         #if COMPTE_PERSO
         case .suiviMac: return "Prix et meilleure offre pour l'IA"
+        case .atlas: return "Mes skills et mes outils"
         #endif
         }
     }
@@ -46,6 +49,7 @@ enum AppMode: String, CaseIterable, Identifiable {
         case .ecouter: return "waveform"
         #if COMPTE_PERSO
         case .suiviMac: return "laptopcomputer"
+        case .atlas: return "map"
         #endif
         }
     }
@@ -59,6 +63,7 @@ enum AppMode: String, CaseIterable, Identifiable {
         case .ecouter: return "5"
         #if COMPTE_PERSO
         case .suiviMac: return "6"
+        case .atlas: return "7"
         #endif
         }
     }

@@ -15,6 +15,8 @@ struct PixelDetection {
     var lineGroups: [[PixelLine]] = []   // lignes libres, regroupées (plusieurs lignes alignées = une zone)
     var allLines: [PixelLine] = []       // toutes les lignes retenues, remplies ou non
     var boxes: [CGRect] = []             // cadres et cases vides
+    var gridBoxes: [CGRect] = []         // papier pointé (déjà dans `boxes`) : cadre d'un schéma à compléter
+    var shortMarks: [PixelLine] = []     // courts tirets au pied du texte (« __ » d'un scan) : réponse d'un mot ou d'un signe
     var skew: CGFloat = 0                // pente corrigée du scan (dy/dx dans l'image)
 }
 
@@ -99,6 +101,7 @@ enum PixelDetector {
         var occupied = false
     }
 
+    static var attachedRun: CGFloat = 0.14
     static func detect(_ g0: GrayBitmap, dpi: CGFloat) -> PixelDetection {
         let w = g0.width, h = g0.height, n = w * h
         guard w > 50, h > 50 else { return PixelDetection() }
@@ -129,6 +132,16 @@ enum PixelDetector {
         let (inkLabels, inkComps) = label(mask: ink, w: w, h: h, target: 1, eight: true)
         lines += dottedLines(comps: inkComps, dpi: dpi)
 
+        let (fLabels, fComps) = label(mask: faintInk, w: w, h: h, target: 1, eight: true)
+        do {
+            // pointillés pâles (scan clair) : seuil plus strict que pour l'encre franche
+            for f in dottedLines(comps: fComps, dpi: dpi, minDots: 14, minLength: Int(1.0 * dpi)) {
+                let dup = lines.contains { l in
+                    abs(l.y - f.y) <= 4 && min(l.x1, f.x1) - max(l.x0, f.x0) > Int(0.5 * Double(f.x1 - f.x0))
+                }
+                if !dup { lines.append(f) }
+            }
+        }
         let faintLines = solidLines(ink: faintInk, w: w, h: h, minLen: Int(1.0 * dpi), maxThick: 3)
         for f in faintLines {
             let dup = lines.contains { l in
@@ -140,19 +153,26 @@ enum PixelDetector {
         // un même trait peut sortir en plusieurs morceaux (scan légèrement penché, trait interrompu) : on les recolle
         lines = mergeCollinear(lines, gap: Int(0.08 * dpi))
 
+        // papier pointé (grille de points d'un schéma à compléter) : ce ne sont pas des lignes d'écriture, mais un seul cadre
+        var gridBoxes: [CGRect] = []
+        do {
+            let (rest, found) = extractDotGrids(lines, dpi: dpi)
+            lines = rest
+            gridBoxes = found
+        }
+
         // régions blanches fermées par un trait, y compris les traits pâles (cadres arrondis, cellules, cartouches) :
         // leurs bords ne sont pas des lignes d'écriture, et celles qui sont vides sont des cases à remplir
         var regions: [CGRect] = []
         var faintBoxes: [CGRect] = []
         do {
-            let (fLabels, fComps) = label(mask: faintInk, w: w, h: h, target: 1, eight: true)
             var faintClean = [UInt8](repeating: 0, count: n)
             for i in 0..<n where faintInk[i] == 1 {
                 let l = Int(fLabels[i])
                 if l >= 0 && fComps[l].area >= 6 { faintClean[i] = 1 }
             }
             let closedFaint = dilate(faintClean, w: w, h: h)
-            let (_, whites) = label(mask: closedFaint, w: w, h: h, target: 0, eight: false)
+            let whites = components4(mask: closedFaint, w: w, h: h, target: 0)
             let rw = Int(0.45 * dpi), rh = Int(0.2 * dpi)
             for c in whites {
                 if c.minX == 0 || c.minY == 0 || c.maxX == w - 1 || c.maxY == h - 1 { continue }
@@ -184,6 +204,14 @@ enum PixelDetector {
             if !dup { boxes.append(fb) }
         }
 
+        for gb in gridBoxes {
+            let dup = boxes.contains { b in
+                let inter = b.intersection(gb)
+                return !inter.isNull && inter.width * inter.height > 0.5 * min(b.width * b.height, gb.width * gb.height)
+            }
+            if !dup { boxes.append(gb) }
+        }
+
         // --- 3. filtrage
         func columnsWithInk(_ x0: Int, _ x1: Int, _ yFrom: Int, _ yTo: Int) -> (cols: Int, total: Int) {
             let ya = max(0, yFrom), yb = min(h - 1, yTo)
@@ -197,16 +225,20 @@ enum PixelDetector {
             return (cols, x1 - x0 + 1)
         }
         func attached(_ x: Int, _ yTop: Int, _ yBot: Int) -> Bool {
-            func vertical(_ rows: ClosedRange<Int>) -> Int {
-                var count = 0
+            // plus long segment vertical continu (à ±3 px de x) dans une fenêtre : un bord de cadre ou de tableau est long,
+            // la lettre qui touche le bout d'un tiret « inline » (Le n______ bourgeois) ne dépasse pas la hauteur d'une ligne
+            func run(_ rows: ClosedRange<Int>) -> Int {
+                var best = 0, cur = 0
                 for y in rows where y >= 0 && y < h {
                     var any = false
                     for xx in max(0, x - 3)...min(w - 1, x + 3) where faintInk[y * w + xx] == 1 { any = true; break }
-                    if any { count += 1 }
+                    if any { cur += 1; best = max(best, cur) } else { cur = 0 }
                 }
-                return count
+                return best
             }
-            return vertical((yTop - 11)...(yTop - 2)) >= 8 || vertical((yBot + 2)...(yBot + 11)) >= 8
+            let need = max(8, Int(attachedRun * dpi))
+            let span = need + 4
+            return run((yTop - span)...(yTop - 2)) >= need || run((yBot + 2)...(yBot + span)) >= need
         }
         /// Nombre de traits verticaux qui traversent la ligne (quadrillage d'un schéma ou d'un tableau).
         func crossings(_ x0: Int, _ x1: Int, _ yTop: Int, _ yBot: Int) -> Int {
@@ -293,6 +325,37 @@ enum PixelDetector {
             if !placed { groups.append([l]) }
         }
 
+
+        // --- 3b. courts tirets posés sur la ligne de base d'un texte (« ... arrivé __ Oh ... ») : un signe ou un mot à écrire
+        var marks: [Raw] = []
+        do {
+            let minW = max(7, Int(0.11 * dpi)), maxW = Int(0.5 * dpi)
+            let maxH = max(3, Int(0.03 * dpi)) + 1
+            let near = Int(0.22 * dpi), above = max(6, Int(0.10 * dpi))
+            let letters = inkComps.filter { c in
+                let cw = c.maxX - c.minX + 1, ch = c.maxY - c.minY + 1
+                return ch >= Int(0.04 * dpi) && ch <= Int(0.2 * dpi) && cw <= Int(0.2 * dpi) && c.area >= 6
+            }
+            for c in inkComps {
+                let cw = c.maxX - c.minX + 1, ch = c.maxY - c.minY + 1
+                guard cw >= minW, cw <= maxW, ch <= maxH, cw >= 4 * ch, c.area * 10 >= cw * ch * 7 else { continue }
+                let y = (c.minY + c.maxY) / 2
+                guard y > marginY, y < h - marginY else { continue }
+                // rien au-dessus (sinon : mot souligné, trait d'un tableau) ni en dessous
+                let up = columnsWithInk(c.minX, c.maxX, c.minY - above, c.minY - 2)
+                let down = columnsWithInk(c.minX, c.maxX, c.maxY + 3, c.maxY + above)
+                guard up.cols * 10 <= up.total, down.cols * 10 <= down.total else { continue }
+                // des lettres à gauche ou à droite, dont le pied est à la hauteur du tiret (ligne de base)
+                var left = false, right = false
+                for l in letters where l.maxY >= c.minY - Int(0.05 * dpi) && l.maxY <= c.maxY + Int(0.03 * dpi) {
+                    if l.maxX < c.minX && c.minX - l.maxX <= near { left = true }
+                    if l.minX > c.maxX && l.minX - c.maxX <= near { right = true }
+                }
+                guard left || right else { continue }
+                marks.append(Raw(x0: c.minX, x1: c.maxX, y: y, yTop: c.minY, dotted: false))
+            }
+        }
+
         // --- 5. retour dans les coordonnées de l'image d'origine
         func back(_ l: Raw) -> PixelLine {
             let y0 = l.y + Int(((CGFloat(l.x0) - cx) * applied).rounded())
@@ -308,51 +371,62 @@ enum PixelDetector {
         var result = PixelDetection()
         result.skew = applied
         result.allLines = unique.map(back)
+        result.shortMarks = marks.map(back)
         result.lineGroups = groups.map { $0.map(back) }
         result.boxes = boxes.map(backBox)
+        result.gridBoxes = gridBoxes.map(backBox)
         return result
     }
 
     /// Fermeture morphologique (carré de côté 2r+1) moins l'image : fait ressortir les traits fins sombres sur fond clair.
     private static func blackTopHat(_ g: [UInt8], w: Int, h: Int, radius r: Int) -> [UInt8] {
         let n = w * h
-        var a = g
-        var b = g
-        // dilatation (maximum) : horizontale puis verticale
-        for y in 0..<h {
-            let row = y * w
-            for x in 0..<w {
-                var m: UInt8 = 0
-                for xx in max(0, x - r)...min(w - 1, x + r) { let v = g[row + xx]; if v > m { m = v } }
-                a[row + x] = m
-            }
-        }
-        for y in 0..<h {
-            for x in 0..<w {
-                var m: UInt8 = 0
-                for yy in max(0, y - r)...min(h - 1, y + r) { let v = a[yy * w + x]; if v > m { m = v } }
-                b[y * w + x] = m
-            }
-        }
-        // érosion (minimum)
-        for y in 0..<h {
-            let row = y * w
-            for x in 0..<w {
-                var m: UInt8 = 255
-                for xx in max(0, x - r)...min(w - 1, x + r) { let v = b[row + xx]; if v < m { m = v } }
-                a[row + x] = m
-            }
-        }
+        var a = [UInt8](repeating: 0, count: n)
+        var b = [UInt8](repeating: 0, count: n)
         var out = [UInt8](repeating: 0, count: n)
-        for y in 0..<h {
-            for x in 0..<w {
-                var m: UInt8 = 255
-                for yy in max(0, y - r)...min(h - 1, y + r) { let v = a[yy * w + x]; if v < m { m = v } }
-                let d = Int(m) - Int(g[y * w + x])
-                out[y * w + x] = d > 0 ? UInt8(min(d, 255)) : 0
+        g.withUnsafeBufferPointer { gp in
+        a.withUnsafeMutableBufferPointer { ap in
+        b.withUnsafeMutableBufferPointer { bp in
+        out.withUnsafeMutableBufferPointer { op in
+            // dilatation (maximum) : horizontale puis verticale ; érosion (minimum) : idem.
+            // Boucles sur des décalages (accès contigus, vectorisables) : fenêtre tronquée aux bords, comme avant.
+            morph(gp.baseAddress!, ap.baseAddress!, w: w, h: h, r: r, horizontal: true, maximum: true)
+            morph(UnsafePointer(ap.baseAddress!), bp.baseAddress!, w: w, h: h, r: r, horizontal: false, maximum: true)
+            morph(UnsafePointer(bp.baseAddress!), ap.baseAddress!, w: w, h: h, r: r, horizontal: true, maximum: false)
+            morph(UnsafePointer(ap.baseAddress!), bp.baseAddress!, w: w, h: h, r: r, horizontal: false, maximum: false)
+            for i in 0..<n {
+                let d = Int(bp[i]) - Int(gp[i])
+                op[i] = d > 0 ? UInt8(min(d, 255)) : 0
+            }
+        }}}}
+        return out
+    }
+
+    /// Maximum (ou minimum) glissant sur 2r+1 pixels, horizontal ou vertical, fenêtre tronquée aux bords.
+    private static func morph(_ src: UnsafePointer<UInt8>, _ dst: UnsafeMutablePointer<UInt8>, w: Int, h: Int, r: Int,
+                              horizontal: Bool, maximum: Bool) {
+        let n = w * h
+        dst.update(repeating: maximum ? 0 : 255, count: n)
+        if horizontal {
+            for y in 0..<h {
+                let s = src + y * w, d = dst + y * w
+                for off in -r...r {
+                    let x0 = max(0, -off), x1 = min(w, w - off)
+                    guard x1 > x0 else { continue }
+                    if maximum { for x in x0..<x1 { let v = s[x + off]; if v > d[x] { d[x] = v } } }
+                    else { for x in x0..<x1 { let v = s[x + off]; if v < d[x] { d[x] = v } } }
+                }
+            }
+        } else {
+            for y in 0..<h {
+                let d = dst + y * w
+                for yy in max(0, y - r)...min(h - 1, y + r) {
+                    let s = src + yy * w
+                    if maximum { for x in 0..<w { let v = s[x]; if v > d[x] { d[x] = v } } }
+                    else { for x in 0..<w { let v = s[x]; if v < d[x] { d[x] = v } } }
+                }
             }
         }
-        return out
     }
 
     private static func mergeCollinear(_ input: [Raw], gap: Int) -> [Raw] {
@@ -415,7 +489,53 @@ enum PixelDetector {
 
     // MARK: - Pointillés
 
-    private static func dottedLines(comps: [Comp], dpi: CGFloat) -> [Raw] {
+    /// Papier pointé (grille de points d'un schéma à compléter) : au moins 10 rangées pointillées espacées d'un pas
+    /// régulier et serré (moins de 0,12 pouce, loin des lignes d'écriture) ; les rangées sont souvent coupées en
+    /// morceaux par les dessins. Retourne les lignes restantes et un cadre pour la grille.
+    private static func extractDotGrids(_ lines: [Raw], dpi: CGFloat) -> ([Raw], [CGRect]) {
+        let dotted = lines.indices.filter { lines[$0].dotted }
+        guard dotted.count >= 10 else { return (lines, []) }
+        // rangées : ordonnées regroupées à 4 px près
+        let ys = dotted.map { lines[$0].y }.sorted()
+        var centers: [Double] = []
+        var cur: [Int] = [ys[0]]
+        for y in ys.dropFirst() {
+            if y - cur.last! <= 4 { cur.append(y) } else { centers.append(Double(cur.reduce(0, +)) / Double(cur.count)); cur = [y] }
+        }
+        centers.append(Double(cur.reduce(0, +)) / Double(cur.count))
+        guard centers.count >= 10 else { return (lines, []) }
+        let lo = 0.04 * Double(dpi), hi = 0.12 * Double(dpi)
+        var gaps: [Double] = []
+        for i in 1..<centers.count { let g = centers[i] - centers[i - 1]; if g >= lo && g <= hi { gaps.append(g) } }
+        guard gaps.count >= 9 else { return (lines, []) }
+        let pitch = gaps.sorted()[gaps.count / 2]
+        func regularGap(_ g: Double) -> Bool {
+            let m = (g / pitch).rounded()
+            return m >= 1 && m <= 3 && abs(g - m * pitch) <= max(3.0, 0.12 * pitch)
+        }
+        var regular: [Double] = []
+        for i in centers.indices {
+            let before = i > 0 && regularGap(centers[i] - centers[i - 1])
+            let after = i + 1 < centers.count && regularGap(centers[i + 1] - centers[i])
+            if before || after { regular.append(centers[i]) }
+        }
+        guard regular.count >= 10, let top = regular.first, let bottom = regular.last else { return (lines, []) }
+        var remove = Set<Int>()
+        var x0 = Int.max, x1 = 0
+        for k in dotted {
+            let l = lines[k]
+            if regular.contains(where: { abs($0 - Double(l.y)) <= 4 }) {
+                remove.insert(k); x0 = min(x0, l.x0); x1 = max(x1, l.x1)
+            }
+        }
+        guard remove.count >= 10, x1 - x0 > Int(1.0 * dpi) else { return (lines, []) }
+        let box = CGRect(x: x0, y: Int(top), width: x1 - x0, height: Int(bottom - top))
+        return (lines.indices.filter { !remove.contains($0) }.map { lines[$0] }, [box])
+    }
+
+    // MARK: - Pointillés (suite)
+
+    private static func dottedLines(comps: [Comp], dpi: CGFloat, minDots: Int = 8, minLength: Int? = nil) -> [Raw] {
         let maxDot = max(5, Int(0.075 * dpi))
         let maxDotH = max(4, Int(0.05 * dpi))
         let maxGap = Int(0.14 * dpi)
@@ -454,9 +574,9 @@ enum PixelDetector {
         }
 
         var out: [Raw] = []
-        for c in chains where c.xs.count >= 8 {
+        for c in chains where c.xs.count >= minDots {
             let x0 = c.xs.first!.0, x1 = c.xs.last!.1
-            guard x1 - x0 + 1 >= Int(0.5 * dpi) else { continue }
+            guard x1 - x0 + 1 >= (minLength ?? Int(0.5 * dpi)) else { continue }
             var gaps: [Int] = []
             for i in 1..<c.xs.count { gaps.append(c.xs[i].0 - c.xs[i - 1].1 - 1) }
             let med = gaps.sorted()[gaps.count / 2]
@@ -479,7 +599,7 @@ enum PixelDetector {
             if l >= 0 && comps[l].area >= 6 { clean[i] = 1 }
         }
         let closed = dilate(clean, w: w, h: h)
-        let (_, whites) = label(mask: closed, w: w, h: h, target: 0, eight: false)
+        let whites = components4(mask: closed, w: w, h: h, target: 0)
 
         let minW = Int(0.5 * dpi), minH = Int(0.22 * dpi)
         var out: [CGRect] = []
@@ -523,40 +643,87 @@ enum PixelDetector {
 
     // MARK: - Composantes connexes
 
+    /// Composantes 4-connexes de `target` (mêmes `Comp`, dans le même ordre que `label(..., eight: false).1`), sans
+    /// image d'étiquettes : remplissage par segments horizontaux, bien plus rapide sur les grandes zones blanches.
+    private static func components4(mask: [UInt8], w: Int, h: Int, target: UInt8) -> [Comp] {
+        var seen = mask            // les pixels déjà traités passent à 2 (jamais une valeur cible : 0 ou 1)
+        var comps: [Comp] = []
+        var stack: [Int32] = []
+        stack.reserveCapacity(4096)
+        seen.withUnsafeMutableBufferPointer { sp in
+            for start in 0..<(w * h) where sp[start] == target {
+                var c = Comp()
+                stack.append(Int32(start))
+                while let p32 = stack.popLast() {
+                    let p = Int(p32)
+                    guard sp[p] == target else { continue }
+                    let y = p / w
+                    let row = y * w
+                    var l = p - row, r = l
+                    while l > 0 && sp[row + l - 1] == target { l -= 1 }
+                    while r < w - 1 && sp[row + r + 1] == target { r += 1 }
+                    for x in l...r { sp[row + x] = 2 }
+                    c.area += r - l + 1
+                    if l < c.minX { c.minX = l }
+                    if r > c.maxX { c.maxX = r }
+                    if y < c.minY { c.minY = y }
+                    if y > c.maxY { c.maxY = y }
+                    for ny in [y - 1, y + 1] where ny >= 0 && ny < h {
+                        let nrow = ny * w
+                        var x = l
+                        while x <= r {
+                            if sp[nrow + x] == target {
+                                stack.append(Int32(nrow + x))
+                                while x <= r && sp[nrow + x] == target { x += 1 }
+                            } else { x += 1 }
+                        }
+                    }
+                }
+                comps.append(c)
+            }
+        }
+        return comps
+    }
+
     private static func label(mask: [UInt8], w: Int, h: Int, target: UInt8, eight: Bool) -> ([Int32], [Comp]) {
         var labels = [Int32](repeating: -1, count: w * h)
         var comps: [Comp] = []
         var stack: [Int32] = []
         stack.reserveCapacity(8192)
-        for start in 0..<(w * h) where mask[start] == target && labels[start] < 0 {
-            let id = Int32(comps.count)
-            var c = Comp()
-            labels[start] = id
-            stack.append(Int32(start))
-            while let p32 = stack.popLast() {
-                let p = Int(p32)
-                let x = p % w, y = p / w
-                c.area += 1
-                if x < c.minX { c.minX = x }
-                if x > c.maxX { c.maxX = x }
-                if y < c.minY { c.minY = y }
-                if y > c.maxY { c.maxY = y }
-                let y0 = max(0, y - 1), y1 = min(h - 1, y + 1)
-                let x0 = max(0, x - 1), x1 = min(w - 1, x + 1)
-                for ny in y0...y1 {
-                    for nx in x0...x1 {
-                        if nx == x && ny == y { continue }
-                        if !eight && nx != x && ny != y { continue }
-                        let q = ny * w + nx
-                        if mask[q] == target && labels[q] < 0 {
-                            labels[q] = id
-                            stack.append(Int32(q))
+        mask.withUnsafeBufferPointer { mp in
+        labels.withUnsafeMutableBufferPointer { lp in
+            for start in 0..<(w * h) where mp[start] == target && lp[start] < 0 {
+                let id = Int32(comps.count)
+                var c = Comp()
+                lp[start] = id
+                stack.append(Int32(start))
+                while let p32 = stack.popLast() {
+                    let p = Int(p32)
+                    let y = p / w
+                    let x = p - y * w
+                    c.area += 1
+                    if x < c.minX { c.minX = x }
+                    if x > c.maxX { c.maxX = x }
+                    if y < c.minY { c.minY = y }
+                    if y > c.maxY { c.maxY = y }
+                    let y0 = max(0, y - 1), y1 = min(h - 1, y + 1)
+                    let x0 = max(0, x - 1), x1 = min(w - 1, x + 1)
+                    for ny in y0...y1 {
+                        let rowBase = ny * w
+                        for nx in x0...x1 {
+                            if nx == x && ny == y { continue }
+                            if !eight && nx != x && ny != y { continue }
+                            let q = rowBase + nx
+                            if mp[q] == target && lp[q] < 0 {
+                                lp[q] = id
+                                stack.append(Int32(q))
+                            }
                         }
                     }
                 }
+                comps.append(c)
             }
-            comps.append(c)
-        }
+        }}
         return (labels, comps)
     }
 }

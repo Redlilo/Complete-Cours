@@ -591,7 +591,7 @@ struct QuestionView: View {
             VerdictBadge(verdict: r.verdict)
             Text(r.feedback).textSelection(.enabled)
             if r.verdict != .juste {
-                labeled("Bonne réponse : ", question.expected).textSelection(.enabled)
+                labeled("Bonne réponse : ", question.expected).foregroundStyle(.blue).textSelection(.enabled)
             }
             if !question.explanation.isEmpty {
                 labeled("Explication : ", question.explanation).textSelection(.enabled)
@@ -637,7 +637,7 @@ struct QuizResults: View {
                         if let g { VerdictBadge(verdict: g.verdict).frame(width: 90, alignment: .leading) }
                         VStack(alignment: .leading, spacing: 2) {
                             Text(q.question).fontWeight(.medium)
-                            if g?.verdict != .juste { Text("Bonne réponse : \(q.expected)").font(.callout).foregroundStyle(.secondary) }
+                            if g?.verdict != .juste { Text("Bonne réponse : \(q.expected)").font(.callout).foregroundStyle(.blue) }
                         }
                         Spacer()
                     }
@@ -732,7 +732,7 @@ struct CorrigeCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Text("Question \(item.number)").font(.headline)
+                Text(item.number.isEmpty ? "Question" : "Question \(item.number)").font(.headline)
                 Text("· page \(item.page)").font(.subheadline).foregroundStyle(.secondary)
                 Spacer()
                 if let s = item.status { VerdictBadge(verdict: s) }
@@ -740,11 +740,13 @@ struct CorrigeCard: View {
             Text(item.instruction).textSelection(.enabled)
             line("Ta réponse", item.studentAnswer.isEmpty ? "(vide ou illisible)" : item.studentAnswer)
             if !item.teacherRemark.isEmpty { line("Remarque du professeur", item.teacherRemark) }
-            line("Bonne réponse", item.correctAnswer)
+            labeled("Bonne réponse : ", item.correctAnswer).foregroundStyle(.blue).textSelection(.enabled)
             line("Explication", item.explanation)
-            HStack(alignment: .top, spacing: 6) {
-                Image(systemName: "lightbulb.fill").foregroundStyle(.yellow).accessibilityHidden(true)
-                labeled("À retenir : ", item.toRemember).textSelection(.enabled)
+            if !item.toRemember.isEmpty {
+                HStack(alignment: .top, spacing: 6) {
+                    Image(systemName: "lightbulb.fill").foregroundStyle(.yellow).accessibilityHidden(true)
+                    labeled("À retenir : ", item.toRemember).textSelection(.enabled)
+                }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)

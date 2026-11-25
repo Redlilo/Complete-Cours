@@ -223,12 +223,27 @@ enum IntakeResult: Equatable {
 
 /// Lit la première page, demande à l'IA (cours ou pas ? quel dossier ?) et déplace, avec journal, sans jamais écraser.
 enum AutoIntakeProcessor {
-    static let system = CourseAnalysis.system + """
+    static let system = systemPrompt(creerDossiers: false)
+
+    /// Consigne du dépôt automatique. `creerDossiers` : si aucun dossier existant ne convient, l'IA propose un NOUVEAU
+    /// sous-dossier dans une matière existante (ex. « Atelier Professionnel/Chantier 7 »), jamais une nouvelle matière.
+    static func systemPrompt(creerDossiers: Bool) -> String {
+        var s = CourseAnalysis.system + """
 
     C'est un NOUVEAU fichier arrivé dans le dossier Téléchargements : propose toujours un dossier s'il s'agit d'un cours. \
     "estUnCours" : true seulement pour un document scolaire (cours, fiche, exercices, évaluation) ; false pour tout le reste \
     (facture, billet, document administratif, photo, formulaire personnel…). Si "estUnCours" est false, laisse "propositions" vide.
     """
+        if creerDossiers {
+            s += """
+
+    \nSi AUCUN dossier de la liste ne convient mais que le document est un cours d'une matière existante, propose un \
+    NOUVEAU sous-dossier dans cette matière, nommé comme ses voisins : par exemple « Atelier Professionnel/Chantier 7 - Titre court » \
+    si le document traite du chantier 7 alors que seuls les chantiers 1 à 6 existent. Ne crée jamais de nouvelle matière.
+    """
+        }
+        return s
+    }
 
     static var schema: [String: Any] {
         var s = CourseAnalysis.schema
@@ -243,7 +258,7 @@ enum AutoIntakeProcessor {
     static func headerLooksLikeEvaluation(_ excerpt: String) -> Bool { LibraryTree.headerLooksLikeEvaluation(excerpt) }
 
     static func process(_ url: URL, watchedFolder: URL, root: URL, ledger: CourseLedger,
-                        generator: StructuredGenerator?) async -> IntakeResult {
+                        generator: StructuredGenerator?, creerDossiers: Bool = false) async -> IntakeResult {
         let src = url.standardizedFileURL
         guard src.deletingLastPathComponent().path == watchedFolder.standardizedFileURL.path,
               src.pathExtension.lowercased() == "pdf" else { return .failed("Ce fichier n'est pas dans le dossier surveillé.") }
@@ -262,7 +277,8 @@ enum AutoIntakeProcessor {
         let digest = CourseDigest(path: "À ranger/\(src.lastPathComponent)", isEvaluation: isEval, excerpt: excerpt)
         let raw: String
         do {
-            raw = try await generator.generate(system: system, userText: CourseAnalysis.userText(digests: [digest], folders: folders),
+            raw = try await generator.generate(system: systemPrompt(creerDossiers: creerDossiers),
+                                               userText: CourseAnalysis.userText(digests: [digest], folders: folders),
                                                images: [], schema: schema)
         } catch { return .unavailable }
         guard let parsed = try? RevJSON.parse(raw), let dict = parsed as? [String: Any],
@@ -270,7 +286,17 @@ enum AutoIntakeProcessor {
         if !isCourse && !isEval { return .notACourse }
         // pas de dossier convenable : le fichier reste où il est (jamais de nouvelle « matière » inventée)
         guard var suggestion = CourseAnalysis.parse(parsed, knownPaths: [digest.path], folders: folders, evaluationPaths: isEval ? [digest.path] : []).first else {
-            return .failed("Aucun dossier convenable : le fichier reste où il est.")
+            return .failed(creerDossiers
+                ? "Aucun dossier convenable, même en en créant un : le fichier reste où il est."
+                : "Aucun dossier convenable : le fichier reste où il est. Active « Créer un dossier si aucun ne convient » pour qu'il en crée un.")
+        }
+        // sans l'option « Créer un dossier » : seul un dossier qui existe déjà est permis (l'IA ne doit pas en inventer un)
+        if !creerDossiers, !folders.contains(suggestion.folder) {
+            return .failed("Aucun dossier convenable : le fichier reste où il est. Active « Créer un dossier si aucun ne convient » pour qu'il en crée un.")
+        }
+        // « Créer un dossier » désactivé : seul un dossier qui existe déjà est permis (jamais « Chantier 7 » créé en douce)
+        if !creerDossiers, !folders.contains(where: { $0.trimmingCharacters(in: CharacterSet(charactersIn: "/")) == suggestion.folder.trimmingCharacters(in: CharacterSet(charactersIn: "/")) }) {
+            return .failed("Aucun dossier existant ne convient : le fichier reste où il est. Active « Créer un dossier si aucun ne convient » pour qu'il en crée un.")
         }
         // un nom de scan (« Scan2026… », « IMG_… ») est remplacé ; un nom choisi par l'élève est gardé
         let junk = name.range(of: "^(scan|img|image|document|sans titre|untitled)[ _-]*\\d", options: [.regularExpression, .caseInsensitive]) != nil

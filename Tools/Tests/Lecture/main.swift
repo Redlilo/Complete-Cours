@@ -72,6 +72,8 @@ base.cours = [c1, c2, c3]; base.reglages.prenoms = ["Lucas"]
 store.sauver(base)
 var relu = store.charger()
 verifie(relu.cours.count == 3 && relu.reglages.prenoms == ["Lucas"] && relu.cours[0].fiche?.titre == "Loi d'Ohm", "aller-retour de la base")
+let permsLecture = (try? FileManager.default.attributesOfItem(atPath: tmp.path)[.posixPermissions] as? Int) ?? -1
+verifie(permsLecture == 0o600, "Lecture.json en 0600 (obtenu \(String(permsLecture, radix: 8)))")
 verifie(relu.cours[1].statut == .erreur, "enregistrement interrompu sans texte : erreur")
 verifie(relu.cours[2].statut == .enAttente, "traitement interrompu : remis en attente")
 LectureStore.nettoyer(&relu)
@@ -202,6 +204,125 @@ storeVoix.sauver(baseVoix)
 let reluVoix = storeVoix.charger()
 verifie(reluVoix.voix?["M. Test"]?.vecteur.count == 256 && reluVoix.cours[0].phrases[0].qui == .autre && reluVoix.cours[0].phrases[0].garder == false, "voix et étiquettes conservées après relecture du fichier")
 verifie(LectureStore(url: URL(fileURLWithPath: "/nonexistent/x.json")).charger().voix == nil, "ancienne base sans voix : lisible")
+
+// attaque : réponses d'analyse en direct invalides ou entourées de texte
+verifie(LectureAnalyseDirect.depuis(json: "") == nil && LectureAnalyseDirect.depuis(json: "{") == nil && LectureAnalyseDirect.depuis(json: "[1,2]") == nil, "analyse directe : JSON invalide -> nil, sans plantage")
+verifie(LectureAnalyseDirect.depuis(json: "Voici {sans JSON} puis {\"resume\":\"ok\",\"points\":[null,1,\"p\"]}")?.points == ["p"], "analyse directe : accolades avant le JSON")
+verifie(LectureAnalyseDirect.depuis(json: String(repeating: "{", count: 50000)) == nil, "analyse directe : 50 000 accolades")
+
+// Fin du cours : derniers morceaux et analyse finale (faux moteurs, aucun micro)
+let idCours = UUID()
+verifie(LectureFin.cours(deMorceau: URL(fileURLWithPath: "/tmp/ecoute-\(idCours.uuidString)/morceau_0003.caf")) == idCours, "morceau : cours retrouvé par son dossier")
+verifie(LectureFin.cours(deMorceau: URL(fileURLWithPath: "/tmp/autre/morceau_0001.caf")) == nil && LectureFin.cours(deMorceau: URL(fileURLWithPath: "/tmp/ecoute-pasunid/m.caf")) == nil, "morceau : dossier inconnu -> nil")
+
+@MainActor func testsFin() async {
+    func pause(_ ms: Int) async { try? await Task.sleep(for: .milliseconds(ms)) }
+    // Un dernier morceau arrive au moment de terminer : on l'attend et son texte est bien là
+    let a = LectureAttente()
+    var textes: [String] = []
+    a.suivre(idCours, { await pause(150); textes.append("dernier morceau") })
+    verifie(a.nombre(idCours) == 1, "attente : morceau compté tout de suite")
+    let fini = await a.attendreFin(idCours, delaiMax: .seconds(5))
+    verifie(fini && textes == ["dernier morceau"] && a.nombre(idCours) == 0, "attente : le dernier morceau est transcrit avant la fin")
+    // Rien à attendre : retour immédiat
+    let t0 = ContinuousClock.now
+    verifie(await a.attendreFin(UUID(), delaiMax: .seconds(5)) && ContinuousClock.now - t0 < .milliseconds(200), "attente : aucun morceau -> pas d'attente")
+    // Morceau bloqué : le délai maximal rend la main (« Terminer » ne bloque jamais), et le morceau finit quand même ensuite
+    let b = LectureAttente()
+    var tardif = false, apresAppele = false
+    b.suivre(idCours, { await pause(700); tardif = true }, apres: { apresAppele = true })
+    let t1 = ContinuousClock.now
+    let finiB = await b.attendreFin(idCours, delaiMax: .milliseconds(200))
+    verifie(!finiB && ContinuousClock.now - t1 < .milliseconds(600) && b.nombre(idCours) == 1, "attente : délai maximal respecté, morceau toujours suivi")
+    await pause(900)
+    verifie(tardif && apresAppele && b.nombre(idCours) == 0, "attente : le morceau en retard finit et prévient (« apres »)")
+    // Deux cours : les morceaux ne se mélangent pas
+    let c = LectureAttente(); let autre = UUID()
+    c.suivre(autre, { await pause(300) })
+    verifie(await c.attendreFin(idCours, delaiMax: .milliseconds(100)) && c.nombre(autre) == 1 && c.total == 1, "attente : un autre cours n'est pas attendu")
+    await pause(400)
+
+    // Analyse finale : jamais sautée parce qu'une autre tourne
+    var textesVus: [String] = []
+    var contenu = "début"
+    let s = LectureAnalyseSerie(executer: { textesVus.append(contenu); await pause(200) })
+    verifie(s.demander() && s.enCours, "analyse : démarre")
+    await pause(30)   // l'analyse a lu le texte de départ
+    verifie(!s.demander() && s.lancees == 1, "analyse ordinaire : ignorée si une tourne déjà")
+    contenu = "début + fin du cours"
+    s.demanderFinale(); s.demanderFinale(); s.demanderFinale()
+    verifie(s.enAttente && s.lancees == 1, "analyse finale : mise en attente pendant la précédente")
+    await pause(700)
+    verifie(s.lancees == 2 && !s.enCours && !s.enAttente && textesVus == ["début", "début + fin du cours"], "analyse finale : lancée après la précédente (une seule fois), avec le texte final")
+    // Moteur au repos : la finale part tout de suite
+    s.demanderFinale()
+    verifie(s.enCours && s.lancees == 3, "analyse finale : immédiate si rien ne tourne")
+    await pause(300)
+    // Rien à analyser
+    let vide = LectureAnalyseSerie(aAnalyser: { false }, executer: { })
+    vide.demanderFinale()
+    verifie(vide.lancees == 0 && !vide.enCours, "analyse : rien à analyser -> rien lancé")
+    // Une analyse qui échoue (le faux moteur ne fait rien) libère quand même la suivante
+    var appels = 0
+    let f = LectureAnalyseSerie(executer: { appels += 1; await pause(50) })
+    f.demander(); f.demanderFinale()
+    await pause(300)
+    verifie(appels == 2 && !f.enCours, "analyse : la finale part même après une analyse terminée sans résultat")
+    // Nouveau cours : la demande en attente de l'ancien est annulée
+    let g = LectureAnalyseSerie(executer: { await pause(100) })
+    g.demander(); g.demanderFinale(); g.reinitialiser()
+    await pause(300)
+    verifie(g.lancees == 1, "analyse : réinitialisation annule la finale en attente")
+}
+await testsFin()
+
+
+// ---- Vocabulaire, nettoyage, recollage, noms (LectureVocabulaire / LectureNettoyage) ----
+let rv = LectureReglages()
+verifie(LectureTexte.corriger("il faut un télé rupteur et un disjoncteur différentielle", reglages: rv) == "il faut un télérupteur et un disjoncteur différentiel", "vocabulaire : télé rupteur, différentielle")
+verifie(LectureTexte.corriger("trois kilo watts heure en tri phasé", reglages: rv) == "trois kilowattheure en triphasé", "vocabulaire : unités collées")
+verifie(LectureTexte.corriger("le v lan et le rj 45", reglages: rv) == "le VLAN et le RJ45", "vocabulaire : réseau")
+verifie(LectureTexte.corriger("un conducteur de phase", reglages: rv) == "un conducteur de phase", "conducteur jamais changé en contacteur")
+verifie(LectureTexte.corriger("la resistance et la tension", reglages: rv) == "la résistance et la tension", "accent oublié rétabli")
+verifie(LectureTexte.corriger("le sectionneur et le contacteur", reglages: rv) == "le sectionneur et le contacteur", "mot juste inchangé")
+let francais = "Aujourd'hui nous allons voir comment on organise le travail de la classe. Le professeur explique la consigne, puis chacun écrit dans son cahier. Ensuite on corrige ensemble les exercices du chapitre précédent et on prépare la prochaine séance avec les documents distribués. Un élève demande une explication supplémentaire sur la conclusion du paragraphe et la réponse arrive rapidement, avec un exemple concret tiré de la vie quotidienne des habitants du quartier."
+verifie(LectureTexte.corriger(francais, reglages: rv) == francais, "texte français courant : aucune fausse correction")
+// contextualStrings
+let cs = LectureVocabulaire.contextualStrings(reglages: { var x = LectureReglages(); x.prenoms = ["Léa"]; return x }(), matiere: "Électricité", prof: "M. Dupont")
+verifie(cs.contains("télérupteur") && cs.contains("Dupont") && cs.contains("Léa") && !cs.contains("M.") && cs.count <= 400 && Set(cs.map { $0.lowercased() }).count == cs.count, "contextualStrings : termes, prénoms, prof, sans doublon")
+// noms
+verifie(LectureTexte.retirerPrenoms("Léa, range ton téléphone. LEA aussi, et lea.", prenoms: ["Léa"]) == "un élève, range ton téléphone. un élève aussi, et un élève.", "prénom : accents et casse ignorés")
+verifie(LectureTexte.retirerPrenoms("Hélène et Helene", prenoms: ["helene"]) == "un élève et un élève", "prénom saisi sans accent")
+verifie(LectureTexte.retirerPrenoms("Merci Monsieur Dupont, Mme Martin et M. Durand-Petit. Madame, je peux ?", prenoms: []) == "Merci le prof, le prof et le prof. Madame, je peux ?", "Madame/Monsieur/M. + nom")
+verifie(LectureTexte.retirerPrenoms("Madame Je ne comprends pas", prenoms: []) == "Madame Je ne comprends pas", "Madame + mot courant gardé")
+verifie(LectureTexte.retirerPrenoms("Dupont a dit que le petit est là", prenoms: [], prof: "M. Dupont") == "le prof a dit que le petit est là", "nom du prof saisi")
+verifie(LectureTexte.retirerPrenoms("c'est un petit schéma", prenoms: [], prof: "Mme Petit") == "c'est un petit schéma", "nom du prof : mot courant en minuscule gardé")
+verifie(LectureTexte.motsDuNomDeProf("Mme Dupont-Martin") == ["Dupont-Martin"], "mots du nom du prof")
+let envoye = LecturePipeline.retirerPrenomsEtCorriger("Bonjour monsieur Durand. Léa, assieds-toi.", { var x = LectureReglages(); x.prenoms = ["Léa"]; return x }(), prof: "M. Durand")
+verifie(!envoye.contains("Durand") && !envoye.contains("Léa") && envoye.contains("le prof") && envoye.contains("un élève"), "texte envoyé à l'IA sans nom ni prénom")
+verifie(!LecturePrompts.fiche("abc", matiere: "Maths", prof: "M. Durand", jour: "lundi").contains("Durand"), "prompt de la fiche : nom du prof absent")
+// répétitions, bruit
+verifie(LectureTexte.retirerRepetitions("le le le le courant passe") == "le courant passe", "répétition d'un mot")
+verifie(LectureTexte.retirerRepetitions("on va voir on va voir on va voir la tension") == "on va voir la tension", "répétition d'un groupe de mots")
+verifie(LectureTexte.retirerRepetitions("très très bien") == "très très bien", "deux fois : gardé")
+verifie(LectureTexte.estBruit("Sous-titrage ST' 501") && LectureTexte.estBruit("...") && !LectureTexte.estBruit("la tension est de 230 volts"), "bruit inventé reconnu")
+func ph(_ d: Double, _ f: Double, _ t: String, qui: LectureQui? = nil) -> LecturePhrase { LecturePhrase(debut: d, fin: f, texte: t, qui: qui) }
+let net = LectureTexte.nettoyer([ph(0, 2, "Sous-titrage Société Radio-Canada"), ph(3, 6, "la tension est de 230 volts."), ph(7, 10, "la tension est de 230 volts."), ph(12, 13, "ok"), ph(14, 15, "ok")])
+verifie(net.map(\.texte) == ["la tension est de 230 volts.", "ok", "ok"], "nettoyer : inventée retirée, phrase redite fusionnée, courtes gardées")
+// recollage
+let coupe = LectureTexte.recoller([ph(0, 3, "Le courant traverse la"), ph(3.8, 6, "résistance et chauffe."), ph(8, 10, "Ensuite on mesure.")])
+verifie(coupe.count == 2 && coupe[0].texte == "Le courant traverse la résistance et chauffe." && coupe[0].fin == 6, "recoller : phrase coupée par une pause")
+verifie(LectureTexte.recoller([ph(0, 3, "Il est midi."), ph(3.5, 5, "ensuite on part")]).count == 2, "recoller : phrase finie jamais collée")
+verifie(LectureTexte.recoller([ph(0, 3, "On voit que"), ph(10, 12, "la tension")]).count == 2, "recoller : longue pause jamais collée")
+verifie(LectureTexte.recoller([ph(0, 3, "On voit que", qui: .prof), ph(3.5, 5, "je sais pas", qui: .autre)]).count == 2, "recoller : deux voix jamais collées")
+verifie(LectureTexte.recoller([ph(0, 3, "c'est l'"), ph(3.2, 5, "ampère")])[0].texte == "c'est l'ampère", "recoller : apostrophe sans espace")
+let deux = LectureTexte.recoller(coupe)
+verifie(deux.map(\.texte) == coupe.map(\.texte), "recoller : idempotent")
+// deux morceaux, finis dans le désordre, phrase coupée entre les deux
+let m1 = [ph(0, 5, "début du cours."), ph(590, 600, "on additionne les")]
+let m2 = [ph(600.5, 605, "intensités dans chaque branche.")]
+let tout = LectureTexte.inserer(m1, dans: LectureTexte.inserer(m2, dans: []))
+verifie(tout.map(\.texte) == ["début du cours.", "on additionne les intensités dans chaque branche."], "morceaux : ordre du temps et phrase recollée entre deux morceaux")
 
 print(echecs == 0 ? "PASS : \(total) vérifications" : "FAIL : \(echecs) échec(s) sur \(total)")
 exit(echecs == 0 ? 0 : 1)

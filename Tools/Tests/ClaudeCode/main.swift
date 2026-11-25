@@ -242,7 +242,7 @@ func phase2() async {
     verif(defauts.callTimeout == 300 && defauts.retryDelays.count == 2 && defauts.killGrace == 2, "réglages par défaut : 5 min, 2 relances, SIGKILL après 2 s")
     let m0 = moteur()
     verif(m0.displayName == "Claude (mon compte)" && m0.usesImages && m0.maxConcurrentPages == 2, "nom, images, 2 pages en parallèle")
-    verif(ClaudeCodeEngine.models.map(\.id) == ["", "opus", "sonnet", "haiku"] && ClaudeCodeEngine.defaultEffort == "medium"
+    verif(ClaudeCodeEngine.models.map(\.id) == ["", "claude-opus-5-5", "opus", "sonnet", "haiku"] && ClaudeCodeEngine.defaultEffort == "high" && ClaudeCodeEngine.defaultModel == "claude-opus-5-5"
           && ClaudeCodeEngine.models.allSatisfy { !$0.label.isEmpty && !$0.hint.isEmpty }, "modèles : défaut du compte / Opus / Sonnet / Haiku, effort medium")
 
     // ---- Localisation du programme

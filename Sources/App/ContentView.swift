@@ -186,6 +186,8 @@ struct AnalysisOverlay: View {
             VStack(spacing: 12) {
                 ProgressView(value: min(max(fraction, 0), 1))
                     .frame(width: 260)
+                    .accessibilityLabel(label)
+                    .accessibilityValue("\(Int((min(max(fraction, 0), 1) * 100).rounded())) pour cent")
                 Text(label)
                     .font(.callout)
                     .foregroundStyle(.secondary)

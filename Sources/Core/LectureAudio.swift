@@ -13,6 +13,10 @@ final class LectureRecorder {
     var onNiveau: ((Float) -> Void)?
     /// Un morceau est fini et fermé : fichier, décalage en secondes depuis le début de l'enregistrement. Hors du fil principal.
     var onMorceau: ((URL, Double) -> Void)?
+    /// Chaque morceau de son reçu du micro, seulement pendant l'écoute (pas en pause). Hors du fil principal.
+    var onBuffer: ((AVAudioPCMBuffer) -> Void)?
+    /// Le micro a changé ou s'est coupé pendant le cours : (message, reprise réussie ?). Hors du fil principal.
+    var onMicro: ((String, Bool) -> Void)?
 
     private let engine = AVAudioEngine()
     private let file_q = DispatchQueue(label: "fr.complete-cours.lecture.recorder")
@@ -31,7 +35,8 @@ final class LectureRecorder {
     func demarrer(dossier: URL, secondesParMorceau: Double) async throws {
         let ok = await AVCaptureDevice.requestAccess(for: .audio)
         guard ok else { throw LectureErreur.micRefuse }
-        try FileManager.default.createDirectory(at: dossier, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: dossier, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: dossier.path)
         let fmt = engine.inputNode.outputFormat(forBus: 0)
         guard fmt.sampleRate > 0 else { throw LectureErreur.transcription("aucun micro n'est disponible") }
         file_q.sync {
@@ -50,6 +55,51 @@ final class LectureRecorder {
             self.file_q.async { self.ecrire(buf) }
         }
         try engine.start()
+        observateur.map { NotificationCenter.default.removeObserver($0) }
+        // Casque débranché, AirPods qui se coupent, changement de micro : le moteur s'arrête seul. On le relance sur le nouveau micro.
+        observateur = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine, queue: nil) { [weak self] _ in
+            self?.reprendreApresChangement()
+        }
+    }
+
+    private var observateur: NSObjectProtocol?
+    private var tentativesMicro = 0
+
+    private func reprendreApresChangement() {
+        let etat: (actif: Bool, pause: Bool) = file_q.sync { (self.actif, self.enPause) }
+        guard etat.actif else { return }
+        let fmt = engine.inputNode.outputFormat(forBus: 0)
+        guard fmt.sampleRate > 0, fmt.channelCount > 0 else {
+            onMicro?("Le micro a été coupé : branche-le, l'écoute reprendra toute seule.", false)
+            // le moteur est arrêté ; un nouvel essai dans 2 s (le micro revient parfois tout de suite)
+            DispatchQueue.global().asyncAfter(deadline: .now() + 2) { [weak self] in self?.reprendreApresChangement() }
+            return
+        }
+        // nouveau format : le morceau en cours est fermé (un fichier a un seul format), le suivant s'ouvre avec le nouveau
+        file_q.sync { fermerMorceau(); format = fmt }
+        engine.inputNode.removeTap(onBus: 0)
+        engine.inputNode.installTap(onBus: 0, bufferSize: 4096, format: fmt) { [weak self] buf, _ in
+            guard let self else { return }
+            var s: Float = 0
+            let n = Int(buf.frameLength)
+            if let ch = buf.floatChannelData?[0], n > 0 {
+                for i in 0..<n { s += ch[i] * ch[i] }
+                self.onNiveau?((s / Float(n)).squareRoot())
+            }
+            self.file_q.async { self.ecrire(buf) }
+        }
+        do {
+            if !engine.isRunning { try engine.start() }
+            tentativesMicro = 0
+            onMicro?(etat.pause ? "Le micro a changé." : "Le micro a changé : l'écoute continue sur le nouveau micro.", true)
+        } catch {
+            tentativesMicro += 1
+            if tentativesMicro < 5 {
+                DispatchQueue.global().asyncAfter(deadline: .now() + 2) { [weak self] in self?.reprendreApresChangement() }
+            } else {
+                onMicro?("Le micro ne repart pas (\(error.localizedDescription)) : termine le cours ou relance l'écoute.", false)
+            }
+        }
     }
 
     func pause() { file_q.sync { enPause = true; fermerMorceau() } }
@@ -57,6 +107,7 @@ final class LectureRecorder {
 
     /// Ferme le morceau en cours (il est livré par `onMorceau`) et coupe le micro.
     func arreter() {
+        observateur.map { NotificationCenter.default.removeObserver($0) }; observateur = nil
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
         file_q.sync { actif = false; fermerMorceau() }
@@ -65,10 +116,12 @@ final class LectureRecorder {
     // appelées sur file_q
     private func ecrire(_ buf: AVAudioPCMBuffer) {
         guard actif, !enPause, let format else { return }
+        onBuffer?(buf)
         if fichier == nil {
             numero += 1
             let url = dossier.appendingPathComponent(String(format: "morceau_%04d.caf", numero))
             fichier = try? AVAudioFile(forWriting: url, settings: format.settings)
+            try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
             decalageMorceau = Double(framesEcrites) / format.sampleRate
             debutMorceau = Date()
         }
@@ -88,7 +141,8 @@ final class LectureRecorder {
 
 enum LectureTranscripteur {
     /// Transcrit un fichier audio en français, sur le Mac. Renvoie les mots avec leur heure dans le fichier.
-    static func transcrire(_ url: URL) async throws -> [LectureMot] {
+    /// `vocabulaire` : termes du cours donnés au moteur pour qu'il les reconnaisse mieux (rien ne quitte le Mac).
+    static func transcrire(_ url: URL, vocabulaire: [String] = []) async throws -> [LectureMot] {
         guard SpeechTranscriber.isAvailable else { throw LectureErreur.transcription("le moteur de dictée de ce Mac n'est pas disponible") }
         let installees = await SpeechTranscriber.installedLocales
         guard installees.contains(where: { $0.identifier.hasPrefix("fr") }) else { throw LectureErreur.langueAbsente }
@@ -97,6 +151,7 @@ enum LectureTranscripteur {
         let transcripteur = SpeechTranscriber(locale: Locale(identifier: "fr_FR"), transcriptionOptions: [], reportingOptions: [],
                                               attributeOptions: [.audioTimeRange])
         let analyseur = SpeechAnalyzer(modules: [transcripteur])
+        await appliquerVocabulaire(vocabulaire, a: analyseur)
         let collecte = Task { () -> [LectureMot] in
             var mots: [LectureMot] = []
             do {
@@ -122,5 +177,13 @@ enum LectureTranscripteur {
             throw LectureErreur.transcription(error.localizedDescription)
         }
         return await collecte.value
+    }
+
+    /// Donne la liste de mots du cours au moteur (contextualStrings). Un échec n'est pas grave : la transcription marche sans.
+    static func appliquerVocabulaire(_ termes: [String], a analyseur: SpeechAnalyzer) async {
+        guard !termes.isEmpty else { return }
+        let contexte = AnalysisContext()
+        contexte.contextualStrings[.general] = termes
+        try? await analyseur.setContext(contexte)
     }
 }

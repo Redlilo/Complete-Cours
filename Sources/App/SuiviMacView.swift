@@ -29,8 +29,13 @@ struct SuiviMacView: View {
         var id: String { rawValue }
     }
     @State private var vue = Vue.ensemble
+    @State private var avecParticuliers = false
+    @State private var memoireEchelle = 0
+    @State private var modeleIA = SuiviModeleIA.parDefaut
+    @State private var quant = SuiviQuant.q4
     @State private var serieChoisie = "__toutes"
     @State private var ajoutOuvert = false
+    @State private var aSupprimerOffre: String?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -74,6 +79,10 @@ struct SuiviMacView: View {
         .navigationTitle("Suivi MacBook IA")
         .onAppear { store.releverSiNecessaire() }
         .sheet(isPresented: $ajoutOuvert) { SuiviAjoutSheet(store: store) }
+        .confirmationDialog("Supprimer cette offre ?", isPresented: Binding(get: { aSupprimerOffre != nil }, set: { if !$0 { aSupprimerOffre = nil } }), titleVisibility: .visible) {
+            Button("Supprimer", role: .destructive) { if let k = aSupprimerOffre { store.supprimerManuelle(k) }; aSupprimerOffre = nil }
+            Button("Annuler", role: .cancel) { aSupprimerOffre = nil }
+        } message: { Text("L'offre saisie à la main sera retirée de la liste.") }
     }
 
     // MARK: Statut
@@ -418,14 +427,16 @@ struct SuiviMacView: View {
         let liste = store.affaires
         return VStack(alignment: .leading, spacing: 10) {
             Text("Les plus rentables par rapport au prix du marché").font(.title2.weight(.bold))
-            Text("Prix du marché = médiane des offres du même modèle (puce, écran, mémoire, stockage) dans le même état (neuf, reconditionné, occasion), au moins 3 offres de 2 vendeurs. Classement par note de rentabilité = moyenne de deux écarts : le prix face au marché de son modèle, et la performance (Go/s) face aux offres vendues à ±10 % du même prix, tous modèles confondus. Pas de modèle favori imposé. « ≈ tokens/s » = vitesse estimée d'une IA locale de 20 Go : c'est la bande passante qui la fixe.")
+            Text("Prix du marché = médiane des offres du même modèle (puce, écran, mémoire, stockage) dans le même état (neuf, reconditionné, occasion), au moins 3 offres de 2 vendeurs. Classement par note de rentabilité = moyenne de deux écarts : le prix face au marché de son modèle, et la performance (Go/s) face aux offres vendues à ±10 % du même prix, tous modèles confondus. Pas de modèle favori imposé. La vitesse dépend surtout de la bande passante et de la taille de l'IA visée.")
                 .font(.callout).foregroundStyle(.secondary)
+            choixModeleIA
+            echelleVue
             if liste.isEmpty {
                 Text("Pas assez d'offres comparables : lance un relevé ou assouplis les filtres.").foregroundStyle(.secondary)
             } else {
                 Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 10) {
                     GridRow {
-                        ForEach(["Machine et vendeur", "Prix", "Marché", "Sous le marché", "≈ tokens/s", "Perf. vs même prix", "Sous le neuf", "Note", "Remarques"], id: \.self) {
+                        ForEach(["Machine et vendeur", "Prix", "Marché", "Sous le marché", "Tokens/s", "Perf. vs même prix", "Sous le neuf", "Note", "Remarques"], id: \.self) {
                             Text($0).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                         }
                     }
@@ -442,8 +453,8 @@ struct SuiviMacView: View {
                             Text("\(eur(a.reference))").monospacedDigit().foregroundStyle(.secondary)
                             Text("\(a.ecart >= 0 ? "−" : "+")\(Int(abs(a.ecart).rounded())) %").monospacedDigit()
                                 .fontWeight(.bold).foregroundStyle(a.suspect ? .orange : (a.ecart >= 8 ? .green : .primary))
-                            Text(a.evaluation.bande.map { "\(Int((Double($0) * 0.65 / 20).rounded()))" } ?? "–").monospacedDigit().fontWeight(.semibold)
-                                .help("Estimation : débit de génération d'un modèle de 20 Go (32 milliards de paramètres, quantifié 4 bits) ≈ 65 % de la bande passante ÷ 20 Go. Un ordre de grandeur, pas une mesure.")
+                            Text(vitesse(a.evaluation)).monospacedDigit().fontWeight(.semibold)
+                                .help("Vitesse d'une IA de \(modeleIA.nom) en \(quant.rawValue) : mesure publique de cette puce si elle existe, sinon estimation (≈).")
                             Text(a.perfVoisins.map { "\($0 >= 0 ? "+" : "−")\(Int(abs($0).rounded())) %" } ?? "–").monospacedDigit()
                                 .foregroundStyle((a.perfVoisins ?? 0) > 0 ? .green : .primary)
                                 .help("Bande passante (Go/s) comparée à la médiane de \(a.nbVoisins) offres vendues à ±10 % du même prix, tous modèles confondus")
@@ -453,6 +464,7 @@ struct SuiviMacView: View {
                                 if a.suspect {
                                     Tag(text: a.offre.source.hasPrefix("Leboncoin") ? "Prix suspect : méfie-toi" : "Prix anormalement bas", color: .orange)
                                 }
+                                tagTient(a.offre.ram)
                                 Tag(text: a.offre.livraison.libelle, color: couleurLivraison(a.offre.livraison))
                                 Tag(text: a.offre.clavier, color: a.offre.clavier == "AZERTY" ? .green : .orange)
                             }
@@ -462,6 +474,122 @@ struct SuiviMacView: View {
                 if liste.contains(where: { $0.suspect }) || liste.contains(where: { $0.offre.source.hasPrefix("Leboncoin") }) {
                     Text("Avant d'acheter une occasion (surtout Leboncoin) : une offre très en dessous du marché est souvent une arnaque. Demande la facture d'origine et le numéro de série (vérifiable sur checkcoverage.apple.com), vérifie la batterie (cycles) et que le Mac n'est pas verrouillé iCloud ou par un MDM, et paie en main propre ou avec une protection (pas de virement à un inconnu).")
                         .font(.caption).foregroundStyle(.orange)
+                }
+            }
+        }
+    }
+
+    // MARK: Échelle de performance : que coûte le gain en rajoutant un peu ?
+
+    /// « 18 » (mesuré), « 18≈ » (estimé) ou « ne tient pas » selon la mémoire de la machine.
+    private func vitesse(_ e: SuiviEvaluation) -> String {
+        guard let b = e.bande else { return "–" }
+        if SuiviVitesse.tient(ram: e.offre.ram, modele: modeleIA, quant: quant) == .non { return "ne tient pas" }
+        let v = SuiviVitesse.tokensParSeconde(puce: e.offre.puce, gpu: e.offre.gpu, bande: b, modele: modeleIA, quant: quant)
+        return "\(Int(v.valeur.rounded()))" + (v.mesure ? "" : "≈")
+    }
+    private func tagTient(_ ram: Int) -> some View {
+        let t = SuiviVitesse.tient(ram: ram, modele: modeleIA, quant: quant)
+        return Tag(text: t == .oui ? "\(modeleIA.nom) tient" : t == .juste ? "\(modeleIA.nom) : juste" : "\(modeleIA.nom) ne tient pas",
+                   color: t == .oui ? .green : t == .juste ? .orange : .red)
+    }
+    private var choixModeleIA: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 10) {
+                Text("IA visée").font(.callout)
+                Picker("IA visée", selection: $modeleIA) { ForEach(SuiviModeleIA.tous) { Text($0.nom).tag($0) } }
+                    .labelsHidden().fixedSize()
+                Picker("Précision", selection: $quant) { ForEach(SuiviQuant.allCases) { Text($0.rawValue).tag($0) } }
+                    .pickerStyle(.segmented).labelsHidden().frame(width: 150)
+            }
+            Text("Prend \(String(format: "%.0f", modeleIA.tailleGo(quant))) Go de mémoire"
+                 + (modeleIA.moe ? ", mais n'en lit que \(String(format: "%.1f", modeleIA.lectureGo(quant))) Go par mot (modèle « mixture d'experts » : bien plus rapide qu'un modèle classique de même taille)." : ".")
+                 + " Vitesse en tokens/s : mesure publique quand elle existe pour la puce, sinon « ≈ » (estimation).")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    private var echelleVue: some View {
+        let e = store.echelle(avecParticuliers: avecParticuliers, ram: memoireEchelle)
+        return VStack(alignment: .leading, spacing: 8) {
+            Text("Si tu rajoutes un peu : que gagnes-tu ?").font(.headline)
+            Picker("Mémoire", selection: $memoireEchelle) {
+                Text("Toutes les mémoires").tag(0); Text("36 Go").tag(36); Text("48 Go").tag(48); Text("64 Go").tag(64)
+            }
+            .pickerStyle(.segmented).frame(maxWidth: 420)
+            Toggle("Inclure les annonces de particuliers (Leboncoin) : prix souvent bas mais impossibles à vérifier", isOn: $avecParticuliers)
+                .toggleStyle(.checkbox).font(.callout)
+            Text("Les offres les plus rapides à chaque niveau de prix, de la moins chère à la plus chère. Pour chaque saut : combien tu paies en plus, combien de performance tu gagnes, et le prix de chaque Go/s en plus comparé à ce que tu paies déjà.")
+                .font(.callout).foregroundStyle(.secondary)
+            if e.echelons.isEmpty {
+                Text("Pas assez d'offres différentes pour construire l'échelle : lance un relevé.").foregroundStyle(.secondary)
+            } else {
+                if let o = e.optimum {
+                    Label("Monte jusqu'à \(SuiviCalcul.nomCourt(o.offre)) (\(eur(o.offre.prix)), \(o.bande ?? 0) Go/s, \(o.offre.source)) : au-delà, rajouter de l'argent ne vaut plus le coup (chaque Go/s en plus coûte plus cher que ce que tu paies déjà).",
+                          systemImage: "scope").font(.callout.weight(.semibold)).foregroundStyle(.green)
+                }
+                if let m = e.meilleurSaut {
+                    Text("Meilleur saut : \(eur(m.de.offre.prix)) → \(eur(m.vers.offre.prix)) (+\(eur(m.deltaPrix))) pour +\(Int(m.deltaPourcent.rounded())) % de performance, soit \(eur2(m.euroParGoS)) par Go/s en plus.")
+                        .font(.callout)
+                }
+                Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 8) {
+                    GridRow {
+                        ForEach(["De", "Vers", "Tu rajoutes", "Tu gagnes", "Tokens/s", "€ par Go/s en plus", "Verdict"], id: \.self) {
+                            Text($0).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                        }
+                    }
+                    Divider().gridCellUnsizedAxes(.horizontal)
+                    ForEach(e.echelons) { s in
+                        GridRow {
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(SuiviCalcul.nomCourt(s.de.offre)).font(.caption)
+                                Text("\(eur(s.de.offre.prix)) · \(s.de.bande ?? 0) Go/s · \(s.de.offre.source)").font(.caption2).foregroundStyle(.secondary)
+                            }
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(SuiviCalcul.nomCourt(s.vers.offre)).font(.caption)
+                                Text("\(eur(s.vers.offre.prix)) · \(s.vers.bande ?? 0) Go/s · \(s.vers.offre.source)").font(.caption2).foregroundStyle(.secondary)
+                            }
+                            Text("+\(eur(s.deltaPrix))").monospacedDigit()
+                            Text("+\(s.deltaBande) Go/s (+\(Int(s.deltaPourcent.rounded())) %)").monospacedDigit()
+                            Text("\(vitesse(s.de)) → \(vitesse(s.vers))")
+                                .monospacedDigit().help("Vitesse d'une IA de \(modeleIA.nom) en \(quant.rawValue). Sans « ≈ » : mesure publique de cette puce (llama.cpp) ramenée à ce modèle ; avec « ≈ » : estimation à partir de la bande passante.")
+                            Text(eur2(s.euroParGoS)).monospacedDigit()
+                            Tag(text: s.verdict.texte, color: [Color.red, .orange, .blue, .green][s.verdict.niveau])
+                        }
+                    }
+                }
+                courbeEchelleVue
+                Text("« Très rentable » : le saut coûte moins de 75 % de ce que tu paies déjà par Go/s ; « Cher pour le gain » : plus de 150 %. L'historique de ces écarts se recalcule à chaque relevé à partir des offres enregistrées.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .card(padding: 14)
+    }
+
+    private var courbeEchelleVue: some View {
+        let pts = store.courbeEchelle(ram: memoireEchelle)
+        return VStack(alignment: .leading, spacing: 6) {
+            Text("Évolution de l'échelle").font(.subheadline.weight(.semibold))
+            if pts.count < 2 {
+                Text("La courbe apparaît à partir de deux relevés (un par jour).").font(.caption).foregroundStyle(.secondary)
+            } else {
+                HStack(alignment: .top, spacing: 14) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Coût du meilleur saut (€ par Go/s en plus) : plus bas = mieux").font(.caption).foregroundStyle(.secondary)
+                        Chart(pts.filter { $0.euroParGoS != nil }) { p in
+                            LineMark(x: .value("Date", p.date), y: .value("€ par Go/s", p.euroParGoS ?? 0))
+                            PointMark(x: .value("Date", p.date), y: .value("€ par Go/s", p.euroParGoS ?? 0))
+                        }
+                        .chartYScale(domain: .automatic(includesZero: false)).frame(height: 130)
+                    }
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Prix du point d'arrêt conseillé (€)").font(.caption).foregroundStyle(.secondary)
+                        Chart(pts.filter { $0.prixOptimum != nil }) { p in
+                            LineMark(x: .value("Date", p.date), y: .value("Prix", p.prixOptimum ?? 0))
+                            PointMark(x: .value("Date", p.date), y: .value("Prix", p.prixOptimum ?? 0))
+                        }
+                        .chartYScale(domain: .automatic(includesZero: false)).frame(height: 130)
+                    }
                 }
             }
         }
@@ -531,7 +659,7 @@ struct SuiviMacView: View {
                 HStack {
                     Text("\(SuiviCalcul.nomCourt(o)) — \(o.source) (\(o.pays)) — \(eur(o.prix))").font(.callout)
                     Spacer()
-                    Button("Supprimer", role: .destructive) { store.supprimerManuelle(o.key) }.buttonStyle(.borderless)
+                    Button("Supprimer", role: .destructive) { aSupprimerOffre = o.key }.buttonStyle(.borderless)
                 }
                 .card(padding: 8)
             }
@@ -616,6 +744,7 @@ private struct LienArrierePlan: View {
 
     var body: some View {
         Button(titre) {
+            guard SuiviLiens.ouvrable(url) else { return }   // jamais un lien hors des boutiques connues, ni autre chose que https
             let config = NSWorkspace.OpenConfiguration()
             config.activates = false
             NSWorkspace.shared.open(url, configuration: config, completionHandler: nil)

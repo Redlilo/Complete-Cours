@@ -33,11 +33,13 @@ final class ClaudeCodeEngine: CompletionEngine {
     /// `id` = valeur de `--model` ; vide = le modèle par défaut du compte (aucune option transmise).
     static let models: [Choice] = [
         Choice(id: "", label: "Défaut du compte", hint: "le modèle que Claude Code choisit pour ton abonnement"),
-        Choice(id: "opus", label: "Opus", hint: "précis, consomme plus de quota"),
+        Choice(id: "claude-opus-5-5", label: "Opus 5.5 (le plus précis)", hint: "le meilleur pour compléter et repérer les trous ; consomme le plus de quota"),
+        Choice(id: "opus", label: "Opus (dernière version)", hint: "précis, consomme plus de quota"),
         Choice(id: "sonnet", label: "Sonnet", hint: "équilibré"),
         Choice(id: "haiku", label: "Haiku", hint: "rapide, léger"),
     ]
-    static let defaultModel = ""
+    /// Opus 5.5 par défaut : c'est le modèle le plus précis (complétion, contrôle des trous, schémas).
+    static let defaultModel = "claude-opus-5-5"
 
     /// `id` = valeur de `--effort`.
     static let efforts: [Choice] = [
@@ -45,7 +47,7 @@ final class ClaudeCodeEngine: CompletionEngine {
         Choice(id: "medium", label: "Normal", hint: "le bon compromis (conseillé)"),
         Choice(id: "high", label: "Approfondi", hint: "réfléchit plus, plus lent, consomme plus de quota"),
     ]
-    static let defaultEffort = "medium"
+    static let defaultEffort = "high"
 
     static let engineName = "Claude (mon compte)"
     /// Texte du bouton de connexion : les messages d'erreur y renvoient, l'interface doit utiliser la même chaîne.

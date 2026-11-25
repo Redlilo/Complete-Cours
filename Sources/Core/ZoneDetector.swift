@@ -14,7 +14,7 @@ enum ZoneDetector {
 
     /// Analyse une page : trouve les trous à remplir et reconstruit le texte autour.
     /// - Parameter needText: lit aussi le texte des pages scannées (OCR) — utile pour les IA sans vision.
-    static func analyze(page: PDFPage, index: Int, firstID: Int, needText: Bool) -> PageAnalysis {
+    static func analyze(page: PDFPage, index: Int, firstID: Int, needText: Bool, decor: DecorIndex = .shared) -> PageAnalysis {
         // Les zones sont dans l'espace de la page AFFICHÉE (rotation appliquée) : voir PageGeometry.
         let frame = PageGeometry(page: page)
 
@@ -105,7 +105,6 @@ enum ZoneDetector {
             let gray = PageImaging.gray(img)
             let dpi = geo.pixelSize.width / (geo.displaySize.width / 72)
             // détection de la page + formes des autres pages (décor répété : en-têtes, pieds de page, logos)
-            let decor = DecorIndex.shared
             let det = decor.detection(page: page, index: index, own: (gray, geo, dpi))
             let pageW = geo.displaySize.width, pageH = geo.displaySize.height
             /// Position verticale depuis le haut de la page affichée (0 en haut, 1 en bas).
@@ -214,13 +213,36 @@ enum ZoneDetector {
                 }
                 drafts.append(z)
             }
+            // 3b'. courts tirets d'un scan (« __ » à remplacer par un signe ou un mot) : doutes, jamais sûrs
+            if !hasText, det.shortMarks.count >= 3 {
+                for pl in det.shortMarks {
+                    let a = geo.toPage(CGPoint(x: CGFloat(pl.x0), y: CGFloat(pl.y)))
+                    let b = geo.toPage(CGPoint(x: CGFloat(pl.x1), y: CGFloat(pl.yEnd)))
+                    var z = Zone(id: 0, page: index, number: 0, source: .ligne)
+                    z.lines = [WritingLine(x0: a.x, x1: b.x, y: a.y, yEnd: b.y)]
+                    if overlapsExisting(z.rect) { continue }
+                    z.confidence = 0.6
+                    z.signals = ["court tiret dans le texte d'un scan (à confirmer)"]
+                    drafts.append(z)
+                }
+            }
             // 3c. cadres et cases vides
             var cadreDrafts: [Int] = []
+            var gridDrafts = Set<Int>()
             for b in det.boxes {
                 let r = geo.toPage(rect: b)
                 var z = Zone(id: 0, page: index, number: 0, source: .cadre)
                 z.box = r
                 if overlapsExisting(r) { continue }
+                if det.gridBoxes.contains(b) {
+                    // papier pointé : zone de schéma à compléter, qui revient à l'identique sur les pages d'un même sujet
+                    z.confidence = 0.72
+                    z.signals = ["papier pointé (schéma à compléter)"]
+                    gridDrafts.insert(drafts.count)
+                    cadreDrafts.append(drafts.count)
+                    drafts.append(z)
+                    continue
+                }
                 z.confidence = 0.55
                 z.signals = ["cadre vide dessiné (rien n'indique qu'il faut y écrire)"]
                 let others = decor.repeats(of: PageShape(box: r), page: index, anyX: false)
@@ -235,7 +257,7 @@ enum ZoneDetector {
             }
             // cases d'un tableau vide, cadres posés sur une figure : plus douteux
             var dropped = Set<Int>()
-            for di in cadreDrafts {
+            for di in cadreDrafts where !gridDrafts.contains(di) {
                 guard let r = drafts[di].box else { continue }
                 var aligned = 0
                 for oi in cadreDrafts where oi != di {
@@ -260,9 +282,9 @@ enum ZoneDetector {
             // (les cadres sont les derniers brouillons : retirer des indices ne décale pas les pointillés du texte)
             if !dropped.isEmpty { drafts = drafts.enumerated().filter { !dropped.contains($0.offset) }.map { $0.element } }
 
-            // 3d. scan sans aucune ligne ni case à remplir : les réponses vont dans les blancs, après les consignes
+            // 3d. espaces blancs laissés après les consignes (réponses sans ligne ni case)
             if drafts.isEmpty, !hasText {
-                // lecture du scan (OCR) seulement pour cette page sans trou trouvé, même si l'IA a la vision
+                // scan sans aucune ligne ni case : lecture (OCR) seulement pour cette page, même si l'IA a la vision
                 if layout.meaningfulCharCount < 20 { layout = OCR.layout(image: img, geometry: geo) }
                 if layout.meaningfulCharCount >= 20 {
                     drafts = implicitSpaces(layout: layout, gray: gray, geo: geo, pageIndex: index, body: layout.bodyHeight)
@@ -632,7 +654,11 @@ final class DecorIndex: @unchecked Sendable {
 
     private struct Entry { var det: PixelDetection; var shapes: [PageShape]; var annotations: Int }
     private let lock = NSLock()
+    /// Instance propre à une analyse : elle sert plusieurs copies du même PDF (une par thread), donc on ne la
+    /// réinitialise pas quand le PDFDocument change ; la détection de toutes les pages y est faite avant (`store`).
+    private let sharedAcrossCopies: Bool
     private weak var document: PDFDocument?
+    init(shared: Bool = false) { sharedAcrossCopies = shared }
     private var entries: [Int: Entry] = [:]
 
     /// Détection de la page `index` (calculée avec `own` si elle n'est pas en mémoire) ; examine aussi les autres pages.
@@ -641,7 +667,7 @@ final class DecorIndex: @unchecked Sendable {
             return PixelDetector.detect(own.0, dpi: own.2)
         }
         lock.lock()
-        if document !== doc { document = doc; entries = [:] }
+        if !sharedAcrossCopies && document !== doc { document = doc; entries = [:] }
         let known = entries[index]
         lock.unlock()
         let det: PixelDetection
@@ -664,7 +690,7 @@ final class DecorIndex: @unchecked Sendable {
         return det
     }
 
-    private func store(_ det: PixelDetection, geometry geo: PageGeometry, page: PDFPage, index: Int) {
+    func store(_ det: PixelDetection, geometry geo: PageGeometry, page: PDFPage, index: Int) {
         var shapes: [PageShape] = []
         for l in det.allLines {
             let a = geo.toPage(CGPoint(x: CGFloat(l.x0), y: CGFloat(l.y)))

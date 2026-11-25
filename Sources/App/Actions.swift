@@ -6,7 +6,8 @@ import Foundation
 enum Actions {
     static func complete(model: CoursModel, engines: EngineStatus, openSettings: () -> Void) {
         engines.refresh()
-        if engines.problem(for: RunSettings.current().engine) != nil {
+        // des schémas seulement : le moteur de texte n'est pas utilisé (les schémas ont leur propre accès, Opus 5.5)
+        if model.needsTextEngine, engines.problem(for: RunSettings.current().engine) != nil {
             openSettings()
             return
         }

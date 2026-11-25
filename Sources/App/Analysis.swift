@@ -119,6 +119,10 @@ final class AnalysisModel: ObservableObject {
     private let ledger = CourseLedger.shared
     let history = MoveHistory.shared
 
+    /// Boutons « Mettre à jour l'arbre » : ce que la feuille d'analyse doit faire à son ouverture.
+    enum MiseAJour { case voir, appliquer, toutRelire }
+    @Published var miseAJourDemandee: MiseAJour?
+
     /// Vrai dès qu'une analyse a été lancée : permet d'afficher « Analyse arrêtée » au lieu d'un spinner sans fin.
     @Published var hasRun = false
 
@@ -168,6 +172,7 @@ final class AnalysisModel: ObservableObject {
                 }
                 moveChoice = Set(suggestions.map(\.path))
                 phase = .ready
+                if autoApplyAfterRun { autoApplyAfterRun = false; confirmerEtAppliquer() }
             } catch is CancellationError {
                 phase = .idle
             } catch {
@@ -178,6 +183,30 @@ final class AnalysisModel: ObservableObject {
     }
 
     func cancel() { task?.cancel() }
+
+    private var autoApplyAfterRun = false
+
+    /// Démarre la mise à jour demandée par un bouton de la bibliothèque (appelé à l'ouverture de la feuille).
+    func lancerMiseAJour(_ m: MiseAJour) {
+        switch m {
+        case .voir: run()
+        case .toutRelire: run(force: true)
+        case .appliquer: autoApplyAfterRun = true; run()
+        }
+    }
+
+    /// Applique d'un coup tout ce que Claude propose, après confirmation (chaque déplacement reste annulable).
+    private func confirmerEtAppliquer() {
+        guard !suggestions.isEmpty else { note = "L'arbre est déjà à jour : Claude ne propose aucun déplacement."; return }
+        let alert = NSAlert()
+        alert.messageText = "Claude propose \(suggestions.count) déplacement\(suggestions.count > 1 ? "s" : "")"
+        alert.informativeText = "Les appliquer tous maintenant ? Rien n'est écrasé et tu pourras tout annuler depuis l'historique des rangements."
+        alert.addButton(withTitle: "Tout appliquer"); alert.addButton(withTitle: "Voir la liste")
+        if alert.runModal() == .alertFirstButtonReturn {
+            applyMoves()
+            note = "Arbre mis à jour d'après Claude : rangements annulables depuis l'historique."
+        }
+    }
 
     /// Un rangement a été annulé : la liste « à ranger » n'est plus à jour ; on invite à relancer l'analyse.
     func movesChanged() {
@@ -404,7 +433,11 @@ struct AnalysisSheet: View {
             content
         }
         .frame(minWidth: 760, minHeight: 560)
-        .onAppear { if model.phase == .idle, !model.hasRun { model.run() }; model.refreshCost() }
+        .onAppear {
+            if let m = model.miseAJourDemandee { model.miseAJourDemandee = nil; model.lancerMiseAJour(m) }
+            else if model.phase == .idle, !model.hasRun { model.run() }
+            model.refreshCost()
+        }
         .onChange(of: model.completeChoice) { _, _ in model.refreshCost() }
         .onChange(of: model.incomplete) { _, _ in model.refreshCost() }
     }
@@ -551,6 +584,7 @@ struct MoveBanner: View {
             Spacer()
             Button { history.dismissBanner() } label: { Image(systemName: "xmark") }.buttonStyle(.plain).foregroundStyle(.white)
                 .help("Masquer (l'historique garde les rangements)")
+                .accessibilityLabel("Masquer le bandeau")
         }
         .padding(.horizontal, 14).padding(.vertical, 10)
         .background(Color.blue.gradient, in: RoundedRectangle(cornerRadius: 10))
@@ -575,12 +609,13 @@ struct MoveHistoryRows: View {
                         Text("\((m.from as NSString).abbreviatingWithTildeInPath) → \((m.to as NSString).abbreviatingWithTildeInPath)")
                             .font(.caption).foregroundStyle(.secondary).lineLimit(2).truncationMode(.middle)
                         Text("\(Self.formatter.string(from: m.date)) · \(m.origin == .depot ? "cours déposé" : (m.origin == .originaux ? "original vide rangé" : "analyse"))")
-                            .font(.caption2).foregroundStyle(.tertiary)
+                            .font(.caption2).foregroundStyle(.secondary)
                     }
                     Spacer(minLength: 8)
                     Button("Annuler ce rangement") { history.undo(m.id) }.controlSize(.small)
                     Button { history.forget(m.id) } label: { Image(systemName: "xmark.circle") }
                         .buttonStyle(.plain).foregroundStyle(.secondary).help("Retirer de l'historique sans déplacer le fichier")
+                        .accessibilityLabel("Retirer de l'historique")
                 }
             }
             Button("Tout annuler") { history.undoAll() }

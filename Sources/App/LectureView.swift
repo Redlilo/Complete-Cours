@@ -119,6 +119,7 @@ struct LectureView: View {
                         }.labelsHidden().frame(maxWidth: 200)
                         Button { prof = ""; model.message = "Écris le nom du nouveau prof dans la case « Nom du prof »." } label: { Image(systemName: "plus") }
                             .help("Ajouter un prof")
+                            .accessibilityLabel("Ajouter un prof")
                     }
                     Spacer()
                 }
@@ -145,6 +146,8 @@ struct LectureView: View {
                 }
                 if model.enregistre {
                     ProgressView(value: min(1, Double(model.niveau) * 6)).tint(model.libelleNiveau.couleur)
+                        .accessibilityLabel("Niveau sonore")
+                        .accessibilityValue(model.libelleNiveau.texte)
                     Text(model.libelleNiveau.texte).font(.caption).foregroundStyle(model.libelleNiveau.couleur)
                     HStack {
                         Button(model.etat == .pause ? "Reprendre" : "Pause") { model.pause() }
@@ -153,9 +156,112 @@ struct LectureView: View {
                 } else {
                     ProgressView().controlSize(.small)
                 }
+                Divider()
+                panneauDirect
             }
         }
         .card()
+    }
+
+    // MARK: En direct
+
+    private var panneauDirect: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("En direct").font(.headline)
+                Spacer()
+                Toggle("Analyse en direct par l'IA", isOn: $model.analyseDirecteActive)
+                    .toggleStyle(.switch)
+                    .accessibilityLabel("Analyse en direct par l'IA")
+                Button("Analyser maintenant") { model.analyserMaintenant() }
+                    .disabled(model.analyseDirectEnCours || model.directFinal.isEmpty)
+                    .accessibilityLabel("Analyser le cours maintenant")
+            }
+            Text("L'analyse en direct utilise un modèle léger (Haiku) de l'IA choisie ; la fiche finale garde ton réglage.")
+                .font(.caption).foregroundStyle(.secondary)
+            if let e = model.erreurDirect {
+                Text(e).font(.caption).foregroundStyle(.orange)
+            }
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .top, spacing: 14) {
+                    transcriptionDirect.frame(maxWidth: .infinity)
+                    analyseDirecte.frame(maxWidth: .infinity)
+                }
+                VStack(alignment: .leading, spacing: 14) {
+                    transcriptionDirect
+                    analyseDirecte
+                }
+            }
+        }
+    }
+
+    private var transcriptionDirect: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 4) {
+                    if model.directFinal.isEmpty && model.directProvisoire.isEmpty {
+                        Text("J'écoute…").foregroundStyle(.secondary).italic()
+                    }
+                    ForEach(Array(model.directFinal.enumerated()), id: \.offset) { _, s in
+                        Text(s).frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    if !model.directProvisoire.isEmpty {
+                        Text(model.directProvisoire).italic().foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    Color.clear.frame(height: 1).id("bas")
+                }
+                .textSelection(.enabled)
+                .padding(8)
+            }
+            .frame(height: 260)
+            .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.05)))
+            .accessibilityLabel("Transcription en direct du cours")
+            .onChange(of: model.directFinal.count) { _, _ in proxy.scrollTo("bas", anchor: .bottom) }
+            .onChange(of: model.directProvisoire) { _, _ in proxy.scrollTo("bas", anchor: .bottom) }
+        }
+    }
+
+    private var analyseDirecte: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 8) {
+                if model.analyseDirectEnCours {
+                    HStack(spacing: 6) { ProgressView().controlSize(.small); Text("Analyse en cours…").font(.caption).foregroundStyle(.secondary) }
+                }
+                if let a = model.analyseDirect {
+                    if !a.resume.isEmpty { Text(a.resume) }
+                    if !a.points.isEmpty {
+                        blocDirect("À retenir") { ForEach(a.points, id: \.self) { Text("• \($0)") } }
+                    }
+                    if !a.termes.isEmpty {
+                        blocDirect("Vocabulaire") { ForEach(a.termes, id: \.self) { Text("**\($0.terme)** : \($0.definition)") } }
+                    }
+                    if !a.devoirs.isEmpty {
+                        blocDirect("Devoirs annoncés") { ForEach(a.devoirs, id: \.self) { Text("• \($0)").foregroundStyle(.orange) } }
+                    }
+                    if !a.doutes.isEmpty {
+                        blocDirect("À vérifier") { ForEach(a.doutes, id: \.self) { Text("• \($0)") } }
+                    }
+                    Text("Mis à jour à \(a.date.formatted(date: .omitted, time: .shortened))")
+                        .font(.caption).foregroundStyle(.secondary)
+                } else {
+                    Text("L'analyse arrive toutes les 2 minutes environ.").foregroundStyle(.secondary).italic()
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .textSelection(.enabled)
+            .padding(8)
+        }
+        .frame(height: 260)
+        .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.05)))
+        .accessibilityLabel("Analyse en direct du cours")
+    }
+
+    private func blocDirect<C: View>(_ titre: String, @ViewBuilder _ contenu: () -> C) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(titre).font(.subheadline.weight(.semibold))
+            contenu()
+        }
     }
 
     private var carteARelire: some View {
@@ -174,6 +280,7 @@ struct LectureView: View {
                             Button("Relire et envoyer") { feuille = .relecture(c.id) }.buttonStyle(.borderedProminent)
                             Button(role: .destructive) { aSupprimer = c } label: { Image(systemName: "trash") }
                                 .help("Supprimer ce cours")
+                                .accessibilityLabel("Supprimer ce cours")
                         }
                     }
                 }
@@ -197,7 +304,7 @@ struct LectureView: View {
                             }
                             Spacer()
                             if c.statut != .traitement, !c.phrases.isEmpty { Button("Réessayer") { model.envoyer(c.id) } }
-                            if c.statut != .traitement { Button(role: .destructive) { aSupprimer = c } label: { Image(systemName: "trash") }.help("Supprimer ce cours") }
+                            if c.statut != .traitement { Button(role: .destructive) { aSupprimer = c } label: { Image(systemName: "trash") }.help("Supprimer ce cours").accessibilityLabel("Supprimer ce cours") }
                             if c.statut == .traitement { ProgressView().controlSize(.small) }
                         }
                     }
@@ -315,6 +422,7 @@ struct LectureRelectureView: View {
                         Spacer(minLength: 4)
                         Button { brouillon = p.texte; edition = p.id } label: { Image(systemName: "pencil") }
                             .buttonStyle(.borderless).help("Corriger cette phrase : les mots changés sont retenus pour les prochains cours")
+                            .accessibilityLabel("Corriger cette phrase")
                         }
                       }
                     }

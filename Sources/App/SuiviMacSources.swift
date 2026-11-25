@@ -113,6 +113,36 @@ struct SuiviCaracteristiques {
 /// Mémoires suivies (Go).
 let suiviMemoires: Set<Int> = [36, 48, 64]
 
+/// Liens des offres : seulement https, et seulement vers le site attendu pour la source (une page piégée ne peut pas
+/// glisser un lien vers un autre domaine). Un lien refusé devient « » (l'offre reste, sans lien).
+enum SuiviLiens {
+    static let hotesParSource: [(prefixe: String, hotes: [String])] = [
+        ("apple", ["apple.com"]), ("ldlc", ["ldlc.com"]), ("materiel", ["materiel.net"]), ("boulanger", ["boulanger.com"]),
+        ("alternate", ["alternate.de"]), ("mac-store24", ["mac-store24.com"]), ("fnac", ["fnac.com"]), ("darty", ["darty.com"]),
+        ("mediamarkt", ["mediamarkt.de"]), ("refurb", ["refurb.me", "backmarket.fr", "backmarket.com", "okamac.com", "rebuy.fr", "rebuy.de"]),
+        ("amazon", ["amazon.fr", "amazon.de", "amazon.it", "amazon.es", "amazon.nl"]), ("leboncoin", ["leboncoin.fr"]),
+        ("kleinanzeigen", ["kleinanzeigen.de"]), ("rue du commerce", ["rueducommerce.fr"]), ("okamac", ["okamac.com"]),
+    ]
+    static var tousLesHotes: [String] { hotesParSource.flatMap(\.hotes) }
+
+    static func hoteOK(_ host: String?, parmi hotes: [String]) -> Bool {
+        guard let h = host?.lowercased() else { return false }
+        return hotes.contains { h == $0 || h.hasSuffix("." + $0) }
+    }
+
+    /// `lien` (absolu ou relatif à `base`) -> URL https de la bonne boutique, sinon nil.
+    static func valide(_ lien: String, base: String? = nil, source: String? = nil) -> URL? {
+        let b = base.flatMap { URL(string: $0) }
+        guard !lien.isEmpty, let u = URL(string: lien, relativeTo: b)?.absoluteURL, u.scheme?.lowercased() == "https" else { return nil }
+        let nom = source?.lowercased()
+        let hotes = hotesParSource.first { nom?.hasPrefix($0.prefixe) == true }?.hotes ?? tousLesHotes
+        return hoteOK(u.host, parmi: hotes) ? u : nil
+    }
+
+    /// Pour l'ouverture dans le navigateur (n'importe quelle boutique connue).
+    static func ouvrable(_ u: URL) -> Bool { u.scheme?.lowercased() == "https" && hoteOK(u.host, parmi: tousLesHotes) }
+}
+
 private func offre(key: String, source: String, pays: String, etat: SuiviEtat, titre: String,
                    c: SuiviCaracteristiques, ram: Int? = nil, ssd: String? = nil, couleur: String = "",
                    affichage: String = "standard", clavier: String? = nil,
@@ -121,12 +151,13 @@ private func offre(key: String, source: String, pays: String, etat: SuiviEtat, t
                    ecranOptionnel: Bool = false) -> SuiviOffre? {
     // ecran 0 = taille non indiquée (annonces de particuliers)
     guard let puce = c.puce, (puce.hasSuffix("Max") || puce.hasSuffix("Ultra")), let ecran = c.ecran ?? (ecranOptionnel ? 0 : nil) else { return nil }
-    guard let memoire = ram ?? c.ram, suiviMemoires.contains(memoire) else { return nil }
+    guard let memoire = ram ?? c.ram, suiviMemoires.contains(memoire), SuiviCalcul.prixValide(prix) else { return nil }
     let gpu = c.gpu ?? SuiviReference.gpuProbable(puce: puce, ram: memoire)
     return SuiviOffre(key: key, source: source, pays: pays, etat: etat, titre: titre, puce: puce, ecran: ecran,
                       gpu: gpu, ram: memoire, ssd: ssd ?? c.ssd ?? "?", affichage: affichage, couleur: couleur,
                       clavier: clavier ?? SuiviReference.claviersParPays[pays] ?? "inconnu",
-                      prix: prix, prixOriginal: prixOriginal, stock: stock, url: url,
+                      prix: prix, prixOriginal: prixOriginal, stock: stock,
+                      url: SuiviLiens.valide(url, source: source)?.absoluteString ?? "",
                       livraison: livraison, remarque: remarque, manuelle: false, ajoutee: nil, grade: grade)
 }
 
@@ -167,7 +198,7 @@ enum SuiviLecteurs {
                 ?? ((tuile["omnitureModel"] as? [String: Any])?["partNumber"] as? String)
                 ?? (prixDict["partNumber"] as? String) ?? titre
             let chemin = (tuile["productDetailsUrl"] as? String) ?? ""
-            let url = chemin.hasPrefix("/") ? base + chemin : (chemin.isEmpty ? base : chemin)
+            let url = SuiviLiens.valide(chemin.isEmpty ? base : chemin, base: base, source: "Apple")?.absoluteString ?? ""
             let original = prixDict["originalProductAmount"] as? Double
             let couleur = couleurFrancaise((dims["dimensionColor"] as? String) ?? titre)
             let nano = titre.lowercased().contains("nano")
@@ -236,7 +267,7 @@ enum SuiviLecteurs {
             if let o = offre(key: "ldlc|\(ref)", source: "LDLC", pays: "FR", etat: .neuf, titre: titre, c: c,
                              ssd: SuiviTexte.premier(#"(\d+ (?:To|Go))\s*\("#, dans: titre)?[1],
                              couleur: couleurFrancaise(titre), affichage: titre.contains("PROLED") ? "PROLED" : "standard",
-                             prix: prix, stock: stock, url: "https://www.ldlc.com" + t[1], livraison: .oui) {
+                             prix: prix, stock: stock, url: SuiviLiens.valide(t[1], base: "https://www.ldlc.com", source: "LDLC")?.absoluteString ?? "", livraison: .oui) {
                 out.append(o)
             }
         }
@@ -285,9 +316,44 @@ enum SuiviLecteurs {
                              etat: reconditionne ? .reconditionneTiers : .neuf, titre: titre, c: c,
                              couleur: couleurFrancaise(titre),
                              affichage: nano ? "nano-texturé" : (titre.contains("XDR") && !titre.contains("Liquid") ? "XDR" : "standard"),
-                             clavier: "AZERTY", prix: prix, url: "https://www.boulanger.com" + ref[1], livraison: .oui,
+                             clavier: "AZERTY", prix: prix, url: SuiviLiens.valide(ref[1], base: "https://www.boulanger.com", source: "Boulanger")?.absoluteString ?? "", livraison: .oui,
                              remarque: marketplace ? "Vendu par un partenaire de Boulanger (Marketplace)." :
                                  (reconditionne ? "Reconditionné par Boulanger." : "")) {
+                out.append(o)
+            }
+        }
+        return out
+    }
+
+    // Kleinanzeigen.de (Allemagne) : petites annonces, comme Leboncoin. Lecture simple de la page de résultats (aucune protection
+    // contournée : si le site affiche autre chose que des annonces, on ne lit rien). Seules les ventes de MacBook Pro Max 36/48/64 Go sont gardées.
+    static func kleinanzeigen(_ html: String) -> [SuiviOffre] {
+        var out: [SuiviOffre] = []
+        for morceau in html.components(separatedBy: "<article ").dropFirst() {
+            let corps = morceau.components(separatedBy: "</article>").first ?? morceau
+            guard let id = SuiviTexte.premier(#"data-adid="(\d+)""#, dans: corps)?[1],
+                  let t = SuiviTexte.premier(#"<h3[^>]*>\s*<a[^>]*>(.*?)</a>"#, dans: corps) else { continue }
+            let titre = SuiviTexte.sansBalises(t[1])
+            let bas = titre.lowercased()
+            // pas des ventes : recherches (« Gesuch », « Suche »), échanges, rachats, appareils cassés ou pièces
+            if corps.contains(">Gesuch<") || bas.hasPrefix("suche") || bas.contains("tausch") || bas.contains("ankauf")
+                || bas.contains("defekt") || bas.contains("ersatzteil") || bas.contains("bastler") || bas.contains("kaputt") { continue }
+            let descr = SuiviTexte.premier(#"</h3>\s*<p[^>]*>(.*?)</p>"#, dans: corps).map { SuiviTexte.sansBalises($0[1]) } ?? ""
+            let apres = corps.components(separatedBy: "</h3>").dropFirst().joined(separator: "</h3>")
+            let prix = SuiviTexte.tous(#"<p[^>]*>\s*([\d.]{3,7})\s*€"#, dans: apres).compactMap { SuiviTexte.prixAllemand($0[1]) }
+            guard let p = prix.first, p >= 500, SuiviCalcul.prixValide(p) else { continue }   // < 500 € : « 1 € VB » ou accessoire, pas un MacBook Max
+            let ancien = prix.count > 1 && prix[1] > p ? prix[1] : nil
+            let c = SuiviCaracteristiques.lire(titre + " " + descr)
+            let envoi = corps.contains("Versand möglich")
+            let ville = SuiviTexte.premier(#"<span[^>]*>(\d{5} [^<]+)</span>"#, dans: corps)?[1].trimmingCharacters(in: .whitespaces)
+            let href = SuiviTexte.premier(#"data-href="([^"]+)""#, dans: corps).map { SuiviTexte.decoder($0[1]) } ?? ""
+            if var o = offre(key: "kleinanzeigen|\(id)", source: "Kleinanzeigen.de", pays: "DE", etat: .occasion, titre: titre, c: c,
+                             prix: p, prixOriginal: ancien, url: SuiviLiens.valide(href, base: "https://www.kleinanzeigen.de", source: "Kleinanzeigen.de")?.absoluteString ?? "",
+                             livraison: envoi ? .aVerifier : .non,
+                             remarque: "Petite annonce allemande (particulier ou professionnel) : prix souvent négociable. "
+                                + (envoi ? "Envoi possible : vers la France à demander au vendeur." : "Retrait sur place seulement."),
+                             ecranOptionnel: true) {
+                o.ville = ville
                 out.append(o)
             }
         }
@@ -353,7 +419,8 @@ enum SuiviLecteurs {
                 var ssd = ssdTxt.flatMap { SuiviTexte.premier(#"(\d+)"#, dans: $0) }.flatMap { Int($0[1]) }.map { "\($0) To" }
                 if ssd == nil { ssd = "?" }
                 let chemin = (p["url"] as? String) ?? ""
-                let url = "https://mac-store24.com" + (chemin.components(separatedBy: "?").first ?? chemin) + "?variant=\((id).filter(\.isNumber))"
+                let url = SuiviLiens.valide((chemin.components(separatedBy: "?").first ?? chemin) + "?variant=\((id).filter(\.isNumber))",
+                                            base: "https://mac-store24.com", source: "mac-store24.com")?.absoluteString ?? ""
                 if let o = offre(key: "macstore24|\(id)", source: "mac-store24.com", pays: "DE", etat: .reconditionneTiers,
                                  titre: "\(titre) — \(titreVariante)", c: c, ssd: ssd, couleur: couleurFrancaise(titre),
                                  clavier: clavier, prix: prix, url: url, livraison: .oui,
@@ -633,6 +700,9 @@ struct SuiviSource {
         s.append(SuiviSource(nom: "Leboncoin (Paris, 20 km)",
                              urls: ["m2", "m3", "m4", "m5"].map { "https://www.leboncoin.fr/recherche?category=15&text=macbook%20pro%20\($0)%20max&locations=Paris_75000__48.8566_2.3522_5000_20000" },
                              lireBlocs: { b, _ in SuiviLecteurs.leboncoin(b) }, extracteur: .leboncoin))
+        s.append(SuiviSource(nom: "Kleinanzeigen.de",
+                             urls: ["m2-max-64gb", "m3-max", "m4-max", "m5-max"].map { "https://www.kleinanzeigen.de/s-macbook-pro-\($0)/k0" },
+                             lire: { page, _ in SuiviLecteurs.kleinanzeigen(page) }))
         s.append(SuiviSource(nom: "Rue du Commerce",
                              urls: ["m4", "m5"].map { "https://www.rueducommerce.fr/recherche/macbook%20pro%20\($0)%20max" },
                              lireBlocs: { b, _ in SuiviLecteurs.rueDuCommerce(b) }))

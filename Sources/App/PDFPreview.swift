@@ -38,7 +38,7 @@ final class ZoneOverlayView: NSView {
 
     private func drawZone(_ z: Zone, selected: Bool) {
         let ignored = z.kind == .ignorer || !z.enabled
-        let written = !z.answer.isEmpty && !ignored
+        let written = z.isFilled && !ignored
         let base: NSColor = selected ? .systemOrange : (ignored ? .systemGray : .systemBlue)
         // une zone déjà remplie n'est qu'entourée : la réponse reste lisible
         let fillAlpha: CGFloat = selected ? (written ? 0.08 : 0.22) : (written || ignored ? 0 : 0.13)
